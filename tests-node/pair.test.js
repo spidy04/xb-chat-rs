@@ -77,6 +77,10 @@ test('replica pair: failover with nothing lost, rejoin as standby, handover back
   for (let i = 0; i < 50; i++) await alice.sendMessage('carol', `before ${i}`); // copied in the first sync
   const bServes = startRust({ dir: dir.b, env: env(b, a) }); // resolves when B serves
   await until('B to follow A', () => rsA.log.some((l) => /standby connected/.test(l)));
+  // A quiet server: the standby must stay connected (it says it's alive),
+  // not be dropped as silent and copy everything again every few seconds.
+  await new Promise((r) => setTimeout(r, 9000));
+  assert.equal(rsA.log.filter((l) => /standby connected/.test(l)).length, 1, 'one copy, then live: no re-copies while idle');
   for (let i = 0; i < 50; i++) await alice.sendMessage('carol', `live ${i}`); // streamed
   await new Promise((r) => setTimeout(r, 300));
   alice.close();

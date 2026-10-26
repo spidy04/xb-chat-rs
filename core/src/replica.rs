@@ -502,15 +502,22 @@ impl Pair {
 
     async fn apply_stream(self: &Arc<Self>, link: &mut Link, apply: &mut Applier, synced: &mut bool) -> Stream {
         let mut tick = tokio::time::interval(Duration::from_millis(50));
+        let mut last_ack = Instant::now();
         loop {
             let got = tokio::select! {
                 _ = self.promote.notified() => return Stream::Promote("asked by the restarted peer".into()),
                 _ = tick.tick() => {
-                    if apply.dirty() {
+                    let dirty = apply.dirty();
+                    if dirty {
                         if let Err(e) = apply.flush().await {
                             return Stream::Lost(format!("can't write: {e}"));
                         }
+                    }
+                    // After writing, and at least every PING when idle: the
+                    // primary drops a standby it hasn't heard from in SILENCE.
+                    if dirty || last_ack.elapsed() >= PING {
                         let _ = link.send(&Node::new("ack").attr("n", self.applied.load(Ordering::Relaxed))).await;
+                        last_ack = Instant::now();
                     }
                     continue;
                 }
