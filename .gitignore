@@ -1,0 +1,17 @@
+# Build output
+/target
+/target-dev
+/target-rel
+
+# Data folders: server keys, token secrets, user data. Never commit.
+/data
+/data-*
+*.redb
+server_key
+secret
+fcm-service-account*.json
+
+# Load-test state and logs
+/loadgen-users.json
+*.log
+node_modules/

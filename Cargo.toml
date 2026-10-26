@@ -1,0 +1,36 @@
+[package]
+name = "xb-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aes-gcm = "0.10"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+fjall = "2.11.2"
+flate2 = "1.1.10"
+futures-util = "0.3.34"
+hmac = "0.12"
+indexmap = { version = "2", features = ["serde"] }
+rand = "0.8"
+redb = "2.6.4"
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json", "stream"] }
+rsa = { version = "0.9", features = ["sha2"] }
+scrypt = "0.11"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.10"
+snow = { version = "0.10.0", default-features = false, features = ["default-resolver-crypto", "risky-raw-split"] }
+tokio = { version = "1.54.0", features = ["full"] }
+tokio-util = { version = "0.7.20", features = ["io"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+# Crypto (scrypt, AES, X25519) is very slow unoptimized: optimize dependencies
+# even in debug builds.
+[profile.dev.package."*"]
+opt-level = 3
+
+# loadgen only: Windows port sharing (SO_REUSE_UNICASTPORT), to open more
+# than ~16,000 test connections from one machine.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
