@@ -1,0 +1,10 @@
+# xb-tunnel: reach a server behind NAT through a relay with a public
+# address (like ngrok). See src/main.rs.
+[package]
+name = "xb-tunnel"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+xb-proto.workspace = true
+tokio.workspace = true

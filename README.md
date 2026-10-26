@@ -291,6 +291,7 @@ a crate sees only what it declares.
 | [gateway](gateway/src/main.rs) | the `xb-gateway` program | proto |
 | [media](media/src/lib.rs) | the `xb-media` program: files only | proto |
 | [loadgen](loadgen/src/main.rs) | the load test tool | proto |
+| [tunnel](tunnel/src/main.rs) | `xb-tunnel`: reach a server behind NAT through a public relay | proto |
 
 | File | What | Node original |
 |---|---|---|
@@ -639,6 +640,57 @@ XB_HTTP_UPSTREAM=http://core1:8080 ./xb-gateway
 when one core can't route the message rate, far beyond what's measured
 here, and it touches every handler (keys, profiles, groups and presence all
 cross users).
+
+### Reaching the server from anywhere: xb-tunnel
+
+A server on a PC at home can't be reached from a phone on 4G: the router
+(and often the ISP, with CGNAT) lets nothing in. Something with a public
+address has to be the meeting point. `xb-tunnel` is a small ngrok of our
+own ([tunnel/src/main.rs](tunnel/src/main.rs)):
+
+```
+phone (any network) ──► VPS: xb-tunnel relay ◄══ one encrypted link ══ PC: xb-tunnel client ──► the server
+                        public ports 15222, 18080                      (connects OUT; nothing at home is opened)
+```
+
+- The **client**, next to the server, connects out to the relay and keeps
+  that link up (it reconnects by itself). Each connection the relay gets
+  on a public port travels over the link as a numbered stream to a local
+  port.
+- The link is xb-proto's encrypted server link, with a shared secret
+  (`XB_TUNNEL_SECRET`): a client without it is refused, and nothing on
+  the way can read or change the traffic (which is Noise-encrypted chat
+  anyway).
+- The relay only forwards bytes: no data, no keys, nothing to back up.
+
+**Try it on one machine** (what the phone setup does now: the relay takes
+the phone's ports, the pair front moves behind the client):
+
+```bash
+export XB_TUNNEL_SECRET=<a long random secret>
+xb-tunnel relay  --listen 0.0.0.0:7000
+xb-tunnel client --relay 127.0.0.1:7000 --map 15222=127.0.0.1:16222 --map 18080=127.0.0.1:19080
+```
+
+**With a VPS** (any small Linux server with a public IP):
+
+1. On the VPS: build it (`cargo build --release -p xb-tunnel`) or copy a
+   Linux build, open TCP **7000, 15222 and 18080** in its firewall, and run
+   `XB_TUNNEL_SECRET=… xb-tunnel relay --listen 0.0.0.0:7000`.
+2. On the PC: the same client command, with `--relay <VPS address>:7000`.
+3. On the phone: Settings → Server → the VPS address. The public ports
+   must stay **15222 and 18080**: the app keeps a photo link's port and
+   only swaps the host.
+
+**Before anything is public:** the test server runs with
+`XB_OTP_ECHO=1`, which hands out SMS codes to whoever asks: through a
+public relay, anyone who finds it could register any number. Turn it off
+(and send real SMS) before the relay runs where others can reach it.
+
+[tests-node/tunnel.test.js](tests-node/tunnel.test.js): the chat server
+reached only through relay and client, with chat both ways, a 400 KB file
+over the web port byte for byte, a client with the wrong secret refused,
+and the client restarted.
 
 ### Fuzzing
 
