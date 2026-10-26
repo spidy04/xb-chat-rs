@@ -44,11 +44,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
-use xb_server::codec::Node;
-use xb_server::frame::FrameDecoder;
-use xb_server::replica::{Link, MAX_NODE, PING, SILENCE, seal_batch, unbatch};
-use xb_server::transport::{self, ConnRead, ConnWrite};
-use xb_server::util::log;
+use xb_proto::codec::Node;
+use xb_proto::frame::FrameDecoder;
+use xb_proto::link::{Link, MAX_NODE, PING, SILENCE, seal_batch, unbatch};
+use xb_proto::transport::{self, ConnRead, ConnWrite};
+use xb_proto::util::log;
 
 const MAX_STANZA: usize = 1024 * 1024;
 
@@ -143,7 +143,7 @@ impl Gw {
         let clients: Vec<Arc<Client>> = self.clients.lock().unwrap().drain().map(|(_, c)| c).collect();
         for c in &clients {
             let retry = 1 + rand::random::<u64>() % self.spread.max(1);
-            let err = xb_server::codec::encode(&Node::new("stream:error").attr("code", "restart").attr("retry", retry));
+            let err = xb_proto::codec::encode(&Node::new("stream:error").attr("code", "restart").attr("retry", retry));
             let _ = c.tx.send(ToClient::Close(Some(err)));
         }
         if !clients.is_empty() {
@@ -367,7 +367,7 @@ async fn metrics(State(gw): State<Arc<Gw>>) -> Response {
     let s = &gw.stats;
     let mut out = String::with_capacity(2048);
     let c = |a: &AtomicU64| a.load(Ordering::Relaxed) as f64;
-    let mut m = |name: &str, kind: &str, help: &str, v: f64| xb_server::metrics::write_metric(&mut out, name, kind, help, v);
+    let mut m = |name: &str, kind: &str, help: &str, v: f64| xb_proto::prom::write_metric(&mut out, name, kind, help, v);
     m("xb_gateway_connections_open", "gauge", "Sockets open now (handshaking or relayed).", gw.open.load(Ordering::Relaxed) as f64);
     m("xb_gateway_connections_max", "gauge", "The connection cap (XB_MAX_CONNECTIONS).", gw.max_connections as f64);
     m("xb_gateway_connections_total", "counter", "Connections relayed to the core since start.", c(&s.connections));

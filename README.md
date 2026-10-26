@@ -97,28 +97,31 @@ turns is fine (see below). Two Rust servers can't: the second one can't open
 
 ## Media as its own service
 
-Files can run in a separate process, `xb-media`, like WhatsApp's separate
+Files are always a separate process, `xb-media`, like WhatsApp's separate
 media servers. It has no chat state at all, so it can sit on other
-machines, scale on its own, and fail without taking chat down.
+machines, scale on its own, and fail without taking chat down. The chat
+server contains no media code: the two share only the upload-token format
+([proto/src/upload_token.rs](proto/src/upload_token.rs)).
+
+On one machine, run the two side by side; nothing to configure:
 
 ```bash
-XB_DATA=../xb-chat/data-test XB_MEDIA_PORT=18081 ./target/release/xb-media
-```
-
-```bash
-XB_MEDIA_URL=http://<this machine>:18081 … ./target/release/xb-server
+./target/release/xb-media      # files, on 127.0.0.1:8081
+./target/release/xb-server     # chat; passes /upload and /m/ through to it
 ```
 
 How the two share the work:
 
-- **Tokens:** the chat server still issues upload tokens (over the
-  encrypted chat connection). `xb-media` checks them with the **same
-  secret**, `XB_SECRET` or the shared `<data>/secret`.
-- **Where clients go:** `media_conn` and the links in messages point at
-  the media service, so clients upload and download there directly.
-- **Apps already installed** still send media to the chat server's web
-  port. The chat server streams those requests through to `xb-media` with
-  no buffering, no disk and no hashing; only the bytes pass.
+- **Tokens:** the chat server issues upload tokens (over the encrypted chat
+  connection). `xb-media` checks them with the **same secret**,
+  `XB_SECRET` or the shared `<data>/secret`.
+- **Where clients go:** by default the links point at the chat server's
+  web port (`XB_PUBLIC_URL`), which streams them through to the media
+  service (`XB_MEDIA_UPSTREAM`, default `http://127.0.0.1:8081`) with no
+  buffering, no disk and no hashing; only the bytes pass. So phones need
+  one port, and links already in old messages keep working.
+- **Directly:** set `XB_MEDIA_URL` to the media service's public address
+  and clients upload and download there, not through the chat server.
 - **Android** now goes wherever the server says. Only a loopback address
   (a development server saying `127.0.0.1`) is replaced by the server host
   the phone is set to, keeping the port.
@@ -132,8 +135,9 @@ How the two share the work:
 | `XB_MEDIA_PUBLIC_URL` | `http://<host>:<port>` | base of the file links |
 | `XB_MEDIA_MAX_MB` | 64 | largest file |
 
-**Measured, same laptop** (chat at 5,000 msg/s while 24 workers upload
-unique 8 MB files at 310–350 MB/s, three runs each):
+**Measured, same laptop**, before media left the chat server for good
+(chat at 5,000 msg/s while 24 workers upload unique 8 MB files at
+310–350 MB/s, three runs each):
 - with media in the chat process, ack p99 was 36–40 ms;
 - with media in `xb-media`, it was 32–42 ms.
 
@@ -148,8 +152,9 @@ uploads. What the split buys:
 - **Media on other machines**, scaled on their own, or object storage
   behind it later.
 
-The whole suite also runs with every test server split
-(`XB_RS_SPLIT_MEDIA=1 node --test tests-node/`); all 69 tests pass.
+Every test server runs with its own `xb-media`. With
+`XB_RS_SPLIT_MEDIA=1`, the links point at the media service directly
+instead of through the chat server.
 
 ## Storage
 
@@ -248,7 +253,7 @@ Both commands use `XB_DATA` like the server.
 1. Unit tests (codec fixtures from Node, framing, helpers):
 
    ```bash
-   cargo test
+   cargo test --workspace
    ```
 
 2. The Node integration tests, run against this server. These are copies of
@@ -268,31 +273,46 @@ Both commands use `XB_DATA` like the server.
 4. [tests-node/crash.test.js](tests-node/crash.test.js): a hard kill after
    200 acknowledged messages loses none of them.
 
-The state on 24 October 2026: 16 unit tests (with the 4 fuzzers) and 69 Node tests pass (also with every server's media split out); a 200,000-input fuzz run per fuzzer found no panic or deadlock. It was
+The state on 26 October 2026: 17 unit tests (with the 4 fuzzers) and 74 Node tests pass, and the 59 protocol tests also pass through a connection gateway (`XB_RS_VIA_GATEWAY=1`). Earlier, a 200,000-input fuzz run per fuzzer found no panic or deadlock. It was
 also checked against the real Android app over Wi-Fi: an FCM wake-up, the
 phone logging in with its device key, the queued messages, and the delivered
 receipts.
 
 ## The code
 
+A workspace of crates, one per part, so the boundaries are the compiler's:
+a crate sees only what it declares.
+
+| Crate | What | Depends on |
+|---|---|---|
+| [proto](proto/src/lib.rs) | the wire: everything two programs must agree on | — |
+| [core](core/src/lib.rs) | chat logic and data | proto |
+| [server](server/src/main.rs) | the `xb-server` program: core + its web port | core, proto |
+| [gateway](gateway/src/main.rs) | the `xb-gateway` program | proto |
+| [media](media/src/lib.rs) | the `xb-media` program: files only | proto |
+| [loadgen](loadgen/src/main.rs) | the load test tool | proto |
+
 | File | What | Node original |
 |---|---|---|
-| [src/main.rs](src/main.rs) | settings, startup, timers, the writer task, `export-json` / `import-json` | `server/main.js` |
-| [src/transport.rs](src/transport.rs) | header, Noise (snow), AES-GCM frames, zlib; TCP or WebSocket | `protocol/transport.js`, `noise.js` |
-| [src/frame.rs](src/frame.rs) | 3-byte length frames | `protocol/framing.js` |
-| [src/codec.rs](src/codec.rs), [src/tokens.rs](src/tokens.rs) | binary stanzas | `protocol/codec.js`, `tokens.js` |
-| [src/server.rs](src/server.rs) | sessions, login, routing, receipts, iq handlers | `server/server.js`, `server/auth/*` |
-| [src/store.rs](src/store.rs) | accounts, devices, keys, groups, queues, in memory; marks what changed | `server/store.js` |
-| [src/db.rs](src/db.rs) | redb tables: load at start, save changed records in one transaction; the writer task | — (Node: the `state.json` snapshot) |
-| [src/queue_db.rs](src/queue_db.rs) | the offline queue on fjall (LSM): write-back, cold stanzas read back | — |
-| [src/media.rs](src/media.rs) | upload/download, resumable, tokens, expiry | `server/media.js` |
-| [src/gateway.rs](src/gateway.rs) | HTTP: `/ws`, media, static web app | `server/gateway.js`, `ws.js` |
-| [src/push.rs](src/push.rs) | FCM | `server/push.js` |
-| [src/keys.rs](src/keys.rs) | the server's key file | `loadServerKey` in `main.js` |
-| [src/admin.rs](src/admin.rs) | test-only hooks | — |
-| [src/bin/loadgen.rs](src/bin/loadgen.rs) | load test: many simulated phones | — |
-| [src/bin/xb-media.rs](src/bin/xb-media.rs) | the media service on its own | `server/media.js` as a server |
-| [src/lib.rs](src/lib.rs) | the modules, shared by both binaries | — |
+| [server/src/main.rs](server/src/main.rs) | settings, startup, timers, the writer task, drain, `export-json` / `import-json` | `server/main.js` |
+| [server/src/web.rs](server/src/web.rs) | the web port: `/ws`, static web app, media pass-through | `server/gateway.js`, `ws.js` |
+| [proto/src/transport.rs](proto/src/transport.rs) | header, Noise (snow), AES-GCM frames, zlib; TCP or WebSocket | `protocol/transport.js`, `noise.js` |
+| [proto/src/frame.rs](proto/src/frame.rs) | 3-byte length frames | `protocol/framing.js` |
+| [proto/src/codec.rs](proto/src/codec.rs), [proto/src/tokens.rs](proto/src/tokens.rs) | binary stanzas | `protocol/codec.js`, `tokens.js` |
+| [proto/src/link.rs](proto/src/link.rs) | the encrypted link between servers | — |
+| [proto/src/upload_token.rs](proto/src/upload_token.rs) | media upload tokens (server issues, media checks) | in `server/media.js` |
+| [core/src/server.rs](core/src/server.rs) | sessions, login, routing, receipts, iq handlers | `server/server.js`, `server/auth/*` |
+| [core/src/store.rs](core/src/store.rs) | accounts, devices, keys, groups, queues, in memory; marks what changed | `server/store.js` |
+| [core/src/db.rs](core/src/db.rs) | redb tables: load at start, save changed records in one transaction; the writer task | — (Node: the `state.json` snapshot) |
+| [core/src/queue_db.rs](core/src/queue_db.rs) | the offline queue on fjall (LSM): write-back, cold stanzas read back | — |
+| [core/src/replica.rs](core/src/replica.rs) | replica pairs | — |
+| [core/src/relay.rs](core/src/relay.rs) | the core's side of connection gateways | — |
+| [core/src/push.rs](core/src/push.rs) | FCM | `server/push.js` |
+| [core/src/keys.rs](core/src/keys.rs) | the server's key file | `loadServerKey` in `main.js` |
+| [core/src/admin.rs](core/src/admin.rs) | test-only hooks | — |
+| [media/src/lib.rs](media/src/lib.rs), [media/src/main.rs](media/src/main.rs) | upload/download, resumable, expiry; the service | `server/media.js` |
+| [gateway/src/main.rs](gateway/src/main.rs) | the connection gateway | — |
+| [loadgen/src/main.rs](loadgen/src/main.rs) | load test: many simulated phones | — |
 
 **How it's built:**
 - Each connection is a tokio task, and a second task writes its encrypted
@@ -319,7 +339,7 @@ receipts.
 
 ## Performance
 
-[src/bin/loadgen.rs](src/bin/loadgen.rs) runs simulated phones against a
+[loadgen/src/main.rs](loadgen/src/main.rs) runs simulated phones against a
 server:
 1. each phone does the Noise handshake and logs in with a phone code (the
    first run), then with its device key;
@@ -483,7 +503,7 @@ needs a second node: drain one while the other serves (see Replica pairs).
 ### Replica pairs: a machine can die
 
 Two servers, each with its own data folder, started the same way, each
-naming the other ([src/replica.rs](src/replica.rs)). One serves (the
+naming the other ([core/src/replica.rs](core/src/replica.rs)). One serves (the
 primary); the other (the standby) keeps a live copy of everything on its
 own disk and takes over if the primary goes.
 
@@ -561,7 +581,7 @@ other machine.
 At millions of phones, a server runs out of connections first: sockets,
 Noise handshakes, encryption and compression, a send queue per phone. The
 routing itself (who gets what) is cheap. So those split apart
-([src/relay.rs](src/relay.rs), [src/bin/xb-gateway.rs](src/bin/xb-gateway.rs)):
+([core/src/relay.rs](core/src/relay.rs), [gateway/src/main.rs](gateway/src/main.rs)):
 
 ```
 phones ──► gateway 1 ─┐
@@ -623,7 +643,7 @@ cross users).
 ### Fuzzing
 
 Everything that reads bytes or stanzas from the internet is fuzzed,
-[src/fuzz.rs](src/fuzz.rs), in pure Rust. libFuzzer would need a C++
+[proto/src/fuzz.rs](proto/src/fuzz.rs), in pure Rust. libFuzzer would need a C++
 compiler, so these use a seeded random generator, mutations of real
 stanzas from the Node codec, and a stanza grammar:
 
@@ -637,7 +657,7 @@ stanzas from the Node codec, and a stanza grammar:
 They run quickly as part of `cargo test`. For a long run:
 
 ```bash
-XB_FUZZ_ITERS=1000000 cargo test --release --lib fuzz_
+XB_FUZZ_ITERS=1000000 cargo test --release --workspace fuzz_
 ```
 
 A failure prints its `XB_FUZZ_SEED`, which replays it exactly.

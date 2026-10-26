@@ -1,0 +1,16 @@
+# The load test tool: many simulated phones.
+[package]
+name = "loadgen"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+xb-proto.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+snow.workspace = true
+tokio.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

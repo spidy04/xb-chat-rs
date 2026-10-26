@@ -7,21 +7,24 @@
 //
 // Environment (the same as the Node server's):
 //   XB_PORT         chat port for TCP clients (default 5222)
-//   XB_WEB_PORT     WebSocket (/ws) + media + the web app over HTTP (default 8080)
+//   XB_WEB_PORT     WebSocket (/ws), the web app, and media links over HTTP (default 8080)
 //   XB_HOST         bind address (default 127.0.0.1; 0.0.0.0 to expose)
 //   XB_DATA         data folder (default ./data)
 //   XB_APP_DIR      web app to host (default <XB_ROOT>/clients/web; "none" = no app)
 //   XB_ROOT         the xb-chat repository, for the web app and its shared
 //                   protocol files (default ../xb-chat)
-//   XB_PUBLIC_URL   public base URL of the web port, used in media links
+//   XB_PUBLIC_URL   public base URL of the web port
 //   XB_ORIGINS      extra allowed web origins, comma separated
 //   XB_SECRET       HMAC secret for media upload tokens (generated and saved if unset)
 //   XB_OTP_ECHO     1 = also return SMS codes to the client (development only)
 //   XB_LEGACY_PASSWORD  1 = also allow the legacy username + password login
 //   XB_FCM_CREDENTIALS  Firebase service-account key (JSON) for push wake-ups
-//   XB_MEDIA_URL    public URL of a separate media service (xb-media); this
-//                   process then stores no files (old paths are passed through)
-//   XB_MEDIA_UPSTREAM  where this process reaches it, if not XB_MEDIA_URL
+// Media: files are always the media service's (xb-media); this process
+// only signs upload tokens (with XB_SECRET, the same as xb-media's).
+//   XB_MEDIA_URL    the media service's public URL, put in file links
+//                   (default: this web port, which passes /upload and /m/ through)
+//   XB_MEDIA_UPSTREAM  where this process reaches the media service
+//                   (default: XB_MEDIA_URL if set, else http://127.0.0.1:8081)
 // Tests only:
 //   XB_TEST_ADMIN=1  POST /__test reads the store; XB_FAKE_PUSH=1 records pushes;
 //   XB_LINK_TTL_MS, XB_PUSH_COOLDOWN_MS, XB_CODE_RESEND_MS override those timings.
@@ -64,7 +67,9 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use transport::{ConnRead, ConnWrite};
 use util::log;
-use xb_server::*;
+use xb_core::*;
+
+mod web;
 
 fn env(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.is_empty())
@@ -191,15 +196,13 @@ async fn main() -> std::io::Result<()> {
 
     let public_host = if host == "0.0.0.0" { "127.0.0.1".to_string() } else { host.clone() };
     let public_url = env("XB_PUBLIC_URL").unwrap_or(format!("http://{public_host}:{web_port}")).trim_end_matches('/').to_string();
-    // XB_MEDIA_URL: files are handled by the separate media service
-    // (xb-media) at that address. This process then only signs upload
-    // tokens, and passes the old /upload and /m/ paths through to it.
+    // Files are the media service's (xb-media). Phones get its URL and an
+    // upload token signed here; by default the links point at this web
+    // port, which passes /upload and /m/ through to it (one port for phones).
     let media_url = env("XB_MEDIA_URL").map(|u| u.trim_end_matches('/').to_string());
-    let media = Arc::new(media::MediaServer::new(data.join("media"), load_secret(&data)?, media_url.clone().unwrap_or(public_url)));
-    if media_url.is_none() {
-        std::fs::create_dir_all(&media.dir)?;
-    }
-    let media_upstream = env("XB_MEDIA_UPSTREAM").map(|u| u.trim_end_matches('/').to_string()).or(media_url.clone());
+    let media_upstream = env("XB_MEDIA_UPSTREAM").map(|u| u.trim_end_matches('/').to_string()).or(media_url.clone()).unwrap_or("http://127.0.0.1:8081".into());
+    let uploads = server::Uploads { tokens: xb_proto::upload_token::UploadTokens::new(load_secret(&data)?), public_url: media_url.unwrap_or(public_url) };
+    let media_public = uploads.public_url.clone();
 
     let push = if env("XB_FAKE_PUSH").as_deref() == Some("1") {
         Some(Arc::new(push::Pusher::Fake(Default::default())))
@@ -230,7 +233,7 @@ async fn main() -> std::io::Result<()> {
         record: env("XB_TEST_ADMIN").as_deref() == Some("1"),
         ..Config::default()
     };
-    let hub = Hub::new(store, Arc::new(db), cfg, Some(media.clone()), push, private_key, public_key);
+    let hub = Hub::new(store, Arc::new(db), cfg, Some(uploads), push, private_key, public_key);
     if let Some(p) = &pair {
         p.serving(hub.clone());
     }
@@ -252,9 +255,8 @@ async fn main() -> std::io::Result<()> {
         Some(_) => ["tokens.js", "signal.js", "e2e.js"].iter().map(|f| (format!("/shared/{f}"), root.join("protocol").join(f))).collect(),
         None => HashMap::new(),
     };
-    let gw = Arc::new(gateway::Gateway {
+    let gw = Arc::new(web::Web {
         hub: hub.clone(),
-        media: Some(media.clone()),
         media_upstream: media_upstream.clone(),
         http: reqwest::Client::new(),
         static_dir: app_dir.clone(),
@@ -265,18 +267,15 @@ async fn main() -> std::io::Result<()> {
 
     tokio::spawn(writer(hub.clone(), notify));
     {
-        // Hourly: drop queued stanzas older than 30 days, and expired media.
-        let (hub, media) = (hub.clone(), media.clone());
-        let external_media = media_url.is_some();
+        // Hourly: drop queued stanzas older than 30 days. (Expired files are
+        // the media service's to sweep.)
+        let hub = hub.clone();
         tokio::spawn(async move {
             let mut t = tokio::time::interval(Duration::from_secs(3600));
             loop {
                 t.tick().await;
                 for i in 0..hub.shard_count() {
                     hub.shard(i).store.expire();
-                }
-                if !external_media {
-                    media.sweep();
                 }
             }
         });
@@ -344,7 +343,7 @@ async fn main() -> std::io::Result<()> {
     hub.drain_spread.store(env_num("XB_DRAIN_SPREAD_S", 10u64).max(1), std::sync::atomic::Ordering::Relaxed);
     // The two listeners run as tasks: aborting them closes the ports (open
     // connections are tasks of their own and keep going).
-    let web = axum::serve(web_listener, gateway::router(gw));
+    let web = axum::serve(web_listener, web::router(gw));
     let web_task = tokio::spawn(async move {
         if let Err(e) = web.await {
             log("web", e.to_string());
@@ -376,7 +375,7 @@ async fn main() -> std::io::Result<()> {
     };
 
     log("start", format!("chat on {host}:{port} (Noise XX), data in {}", data.display()));
-    log("start", format!("web gateway on http://{}:{web_port} (WebSocket /ws, media {})", if host == "0.0.0.0" { "localhost" } else { &host }, media.public_url));
+    log("start", format!("web gateway on http://{}:{web_port} (WebSocket /ws, media {media_public} -> {media_upstream})", if host == "0.0.0.0" { "localhost" } else { &host }));
     log(
         "start",
         match &app_dir {

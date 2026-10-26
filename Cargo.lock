@@ -945,6 +945,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
+name = "loadgen"
+version = "0.1.0"
+dependencies = [
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "snow",
+ "tokio",
+ "windows-sys",
+ "xb-proto",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2239,15 +2252,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "xb-server"
+name = "xb-core"
 version = "0.1.0"
 dependencies = [
- "aes-gcm",
  "axum",
  "base64 0.22.1",
  "fjall",
- "flate2",
- "futures-util",
  "hmac",
  "indexmap",
  "rand 0.8.8",
@@ -2258,11 +2268,68 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "snow",
  "tokio",
  "tokio-util",
- "windows-sys",
  "x25519-dalek",
+ "xb-proto",
+]
+
+[[package]]
+name = "xb-gateway"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "futures-util",
+ "rand 0.8.8",
+ "reqwest",
+ "tokio",
+ "tokio-util",
+ "xb-proto",
+]
+
+[[package]]
+name = "xb-media"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-util",
+ "xb-proto",
+]
+
+[[package]]
+name = "xb-proto"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "axum",
+ "base64 0.22.1",
+ "flate2",
+ "futures-util",
+ "hmac",
+ "rand 0.8.8",
+ "sha2",
+ "snow",
+ "tokio",
+]
+
+[[package]]
+name = "xb-server"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "futures-util",
+ "rand 0.8.8",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "xb-core",
+ "xb-proto",
 ]
 
 [[package]]

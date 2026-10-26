@@ -25,7 +25,6 @@
 //! they reconnect spread out, to whichever core is serving then.
 
 use crate::codec::Node;
-use crate::replica::{Link, MAX_NODE, PING, SILENCE, seal_batch, unbatch};
 use crate::server::{Hub, Relayed, serve_relayed};
 use crate::util::log;
 use std::collections::HashMap;
@@ -35,6 +34,7 @@ use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use xb_proto::link::{Link, MAX_NODE, PING, SILENCE, seal_batch, unbatch};
 
 /// Listens for gateways. -> the address it listens on.
 pub async fn listen(hub: Arc<Hub>, addr: &str, secret: String) -> io::Result<String> {

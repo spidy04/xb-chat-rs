@@ -31,11 +31,6 @@ async fn drain(State(hub): State<Arc<Hub>>) -> &'static str {
     "draining\n"
 }
 
-/// One metric in Prometheus' text format (also used by xb-gateway and xb-media).
-pub fn write_metric(out: &mut String, name: &str, kind: &str, help: &str, value: f64) {
-    let _ = writeln!(out, "# HELP {name} {help}\n# TYPE {name} {kind}\n{name} {value}");
-}
-
 /// Ready for traffic? Not when nearly full (let a load balancer send new
 /// phones elsewhere), and not when saving has failed in the last 30 s.
 async fn ready(State(hub): State<Arc<Hub>>) -> Response {
@@ -54,7 +49,7 @@ async fn ready(State(hub): State<Arc<Hub>>) -> Response {
 async fn metrics(State(hub): State<Arc<Hub>>) -> Response {
     let s = &hub.stats;
     let mut out = String::with_capacity(4096);
-    let mut metric = |name: &str, kind: &str, help: &str, value: f64| write_metric(&mut out, name, kind, help, value);
+    let mut metric = |name: &str, kind: &str, help: &str, value: f64| xb_proto::prom::write_metric(&mut out, name, kind, help, value);
     // Gauges that need a look at every shard (64 short locks).
     let (mut users, mut devices, mut registered, mut queued, mut in_mem, mut mem_bytes) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
     let mut skipped = 0u64;

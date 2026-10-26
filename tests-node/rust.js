@@ -8,7 +8,9 @@
 //   await rs.close()
 //
 // The binary: XB_RS_BIN, else the newest of ../target{,-dev}/debug/xb-server(.exe)
-// (build it first: cargo build).
+// (build it first: cargo build). Each server gets its own media service
+// (xb-media) beside it, as in production: files are always the media
+// service's.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { promises as fs, statSync } from 'node:fs';
@@ -54,10 +56,10 @@ async function startGateway(core, webUpstream) {
   });
 }
 
-// The separate media service (xb-media) on a free port; -> { port, child }
+// The media service (xb-media) on a free port; -> { port, metrics, child }
 async function startMedia(dir) {
   const child = spawn(MEDIA_BIN, [], {
-    env: { ...process.env, XB_DATA: dir, XB_MEDIA_HOST: '127.0.0.1', XB_MEDIA_PORT: '0', XB_SECRET: SECRET, XB_METRICS_ADDR: '127.0.0.1:0' },
+    env: { ...process.env, XB_DATA: dir, XB_MEDIA_HOST: '127.0.0.1', XB_MEDIA_PORT: '0', XB_SECRET: SECRET, XB_METRICS_ADDR: '127.0.0.1:0', XB_TEST_ADMIN: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const port = await new Promise((resolve, reject) => {
@@ -85,16 +87,18 @@ export function rustCommand(dir, command) {
   return r.stdout;
 }
 
-// splitMedia (or XB_RS_SPLIT_MEDIA=1 for every test): media in its own
-// process (xb-media), the chat server pointed at it with XB_MEDIA_URL.
+// splitMedia (or XB_RS_SPLIT_MEDIA=1 for every test): file links point at
+// the media service itself (XB_MEDIA_URL); otherwise at the server's web
+// port, which passes them through (XB_MEDIA_UPSTREAM).
 // viaGateway (or XB_RS_VIA_GATEWAY=1 for every test): the clients connect
 // to a connection gateway (xb-gateway) in front of the server, not to the
 // server itself; admin calls and media still go to the server.
 export async function startRust({ dir, staticKeyPair = null, env = {}, appDir = 'none', splitMedia = !!process.env.XB_RS_SPLIT_MEDIA, viaGateway = !!process.env.XB_RS_VIA_GATEWAY } = {}) {
   if (viaGateway) env = { XB_GATEWAY_ADDR: '127.0.0.1:0', XB_GATEWAY_SECRET: 'gw-secret', ...env };
   await fs.mkdir(dir, { recursive: true });
-  const mediaService = splitMedia ? await startMedia(dir) : null;
-  if (mediaService) env = { XB_MEDIA_URL: `http://127.0.0.1:${mediaService.port}`, ...env };
+  const mediaService = await startMedia(dir);
+  const mediaBase = `http://127.0.0.1:${mediaService.port}`;
+  env = { XB_MEDIA_UPSTREAM: mediaBase, ...(splitMedia ? { XB_MEDIA_URL: mediaBase } : {}), ...env };
   if (staticKeyPair) await fs.writeFile(path.join(dir, 'server_key'), Buffer.from(staticKeyPair.private).toString('base64'));
   const child = spawn(BIN, [], {
     env: {
@@ -115,6 +119,7 @@ export async function startRust({ dir, staticKeyPair = null, env = {}, appDir = 
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const log = [];
+  // If it doesn't start (a port taken, say), its media service goes too.
   const info = await new Promise((resolve, reject) => {
     const found = {};
     let buf = '';
@@ -142,16 +147,26 @@ export async function startRust({ dir, staticKeyPair = null, env = {}, appDir = 
     };
     child.stdout.setEncoding('utf8').on('data', onData);
     child.stderr.setEncoding('utf8').on('data', onData);
+  }).catch((err) => {
+    child.kill();
+    mediaService.child.kill();
+    throw err;
   });
   child.removeAllListeners('exit');
+  // A server that exits by itself (a drain, a takeover) takes its media service along.
+  child.once('exit', () => {
+    if (mediaService.child.exitCode === null && mediaService.child.signalCode === null) mediaService.child.kill();
+  });
   const base = `http://127.0.0.1:${info.webPort}`;
 
   const admin = async (fn, ...args) => {
     const res = await fetch(`${base}/__test`, { method: 'POST', body: JSON.stringify({ fn, args: args.map(String) }) });
     return res.json();
   };
-  // chat.store, over HTTP: every method is async here.
-  const store = new Proxy({}, { get: (_, fn) => (...args) => admin(fn, ...args) });
+  // chat.store, over HTTP: every method is async here. Expiring files is
+  // the media service's (its own test hook).
+  const expireMedia = async () => Number(await (await fetch(`${mediaBase}/__test`, { method: 'POST', body: '{"fn":"expire"}' })).text());
+  const store = new Proxy({}, { get: (_, fn) => (fn === 'expireMedia' ? expireMedia : (...args) => admin(fn, ...args)) });
   // Same secret, same token format: the Node class issues tokens the Rust server accepts.
   const media = new MediaServer({ dir: path.join(dir, 'media'), secret: SECRET, publicUrl: base });
 
@@ -179,7 +194,7 @@ export async function startRust({ dir, staticKeyPair = null, env = {}, appDir = 
       const exited = new Promise((r) => child.once('exit', r));
       child.kill('SIGKILL');
       await exited;
-      mediaService?.child.kill('SIGKILL');
+      mediaService.child.kill('SIGKILL');
     },
     async close() {
       await killGateway();
@@ -187,14 +202,14 @@ export async function startRust({ dir, staticKeyPair = null, env = {}, appDir = 
       const exited = new Promise((r) => child.once('exit', r));
       child.kill();
       await exited;
-      if (mediaService && mediaService.child.exitCode === null && mediaService.child.signalCode === null) {
+      if (mediaService.child.exitCode === null && mediaService.child.signalCode === null) {
         const gone = new Promise((r) => mediaService.child.once('exit', r));
         mediaService.child.kill();
         await gone;
       }
     },
-    mediaPort: mediaService?.port,
-    mediaMetrics: mediaService?.metrics,
+    mediaPort: mediaService.port,
+    mediaMetrics: mediaService.metrics,
     // Split media only: the media service dies (chat must not notice).
     async killMedia() {
       const gone = new Promise((r) => mediaService.child.once('exit', r));

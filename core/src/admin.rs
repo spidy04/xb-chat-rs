@@ -53,19 +53,6 @@ pub async fn call(hub: &Arc<Hub>, f: &str, a: String, b: String) -> Value {
             }
             json!(true)
         }
-        "expireMedia" => match &hub.media {
-            // Ages every file past its TTL, then sweeps: the "files expire" test.
-            Some(m) => {
-                let old = std::time::SystemTime::now() - std::time::Duration::from_millis(m.ttl_ms + 60_000);
-                for e in std::fs::read_dir(&m.dir).into_iter().flatten().flatten() {
-                    if let Ok(f) = std::fs::File::options().write(true).open(e.path()) {
-                        let _ = f.set_modified(old);
-                    }
-                }
-                json!(m.sweep())
-            }
-            None => json!(0),
-        },
         // Did the server receive or store these bytes (base64)? For "the server
         // sees only ciphertext" tests.
         "saw" => {

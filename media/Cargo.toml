@@ -1,0 +1,14 @@
+# xb-media: encrypted files only. Knows nothing about chat.
+[package]
+name = "xb-media"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+xb-proto.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true

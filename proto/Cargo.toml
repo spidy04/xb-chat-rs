@@ -1,0 +1,17 @@
+# The wire: what every program must agree on, byte for byte.
+[package]
+name = "xb-proto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aes-gcm.workspace = true
+axum.workspace = true
+base64.workspace = true
+flate2.workspace = true
+futures-util.workspace = true
+hmac.workspace = true
+rand.workspace = true
+sha2.workspace = true
+snow.workspace = true
+tokio.workspace = true

@@ -27,10 +27,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use xb_server::codec::Node;
-use xb_server::frame::{self, FrameDecoder};
-use xb_server::tokens::HEADER;
-use xb_server::transport::{Cipher, NOISE_PARAMS};
+use xb_proto::codec::Node;
+use xb_proto::frame::{self, FrameDecoder};
+use xb_proto::tokens::HEADER;
+use xb_proto::transport::{Cipher, NOISE_PARAMS};
 
 /// Logins tried again after "busy" or a refused socket.
 static RETRIES: AtomicU64 = AtomicU64::new(0);

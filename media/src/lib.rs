@@ -1,4 +1,6 @@
-//! Media server (server/media.js): a temporary locker for ENCRYPTED files.
+//! xb-media's library: a temporary locker for ENCRYPTED files (the Node
+//! server's server/media.js). It knows nothing about chat; the only thing it
+//! shares with the chat server is the upload-token format (xb-proto).
 //! Clients encrypt with a fresh key, upload the ciphertext, and send the URL
 //! and key inside an end-to-end encrypted message. We never see a key.
 //!
@@ -10,14 +12,10 @@
 //! Files are named by the SHA-256 of their ciphertext, so forwards are
 //! deduplicated, and deleted after 30 days. Partial uploads after a day.
 
-use crate::util::{log, now_ms, sha256_hex};
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::Response;
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use futures_util::StreamExt;
-use hmac::{Hmac, Mac};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -25,16 +23,17 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 use tokio::io::AsyncWriteExt;
+use xb_proto::upload_token::UploadTokens;
+use xb_proto::util::{log, now_ms, percent_decode, sha256_hex};
 
 const PART_TTL_MS: u64 = 24 * 3600 * 1000;
 
 pub struct MediaServer {
     pub dir: PathBuf,
-    secret: String,
+    tokens: UploadTokens,
     pub public_url: String,
     pub max_bytes: u64,
     pub ttl_ms: u64,
-    pub token_ttl_ms: u64,
     busy: Mutex<HashSet<PathBuf>>,
 }
 
@@ -60,37 +59,12 @@ fn touch(path: &PathBuf) -> std::io::Result<()> {
 
 impl MediaServer {
     pub fn new(dir: PathBuf, secret: String, public_url: String) -> MediaServer {
-        MediaServer { dir, secret, public_url, max_bytes: 64 * 1024 * 1024, ttl_ms: 30 * 24 * 3600 * 1000, token_ttl_ms: 10 * 60 * 1000, busy: Mutex::new(HashSet::new()) }
+        MediaServer { dir, tokens: UploadTokens::new(secret), public_url, max_bytes: 64 * 1024 * 1024, ttl_ms: 30 * 24 * 3600 * 1000, busy: Mutex::new(HashSet::new()) }
     }
 
-    fn mac(&self, body: &str) -> Vec<u8> {
-        let mut m = <Hmac<Sha256> as Mac>::new_from_slice(self.secret.as_bytes()).expect("any key length");
-        m.update(body.as_bytes());
-        m.finalize().into_bytes().to_vec()
-    }
-
-    /// A short-lived upload token, handed out over the chat connection.
-    pub fn issue_token(&self, user: &str) -> (String, u64) {
-        let exp = now_ms() + self.token_ttl_ms;
-        let body = format!("{user}.{exp}");
-        let sig = B64URL.encode(self.mac(&body));
-        (format!("{body}.{sig}"), exp)
-    }
-
+    /// The user an upload token was issued to (by the chat server).
     pub fn check_token(&self, token: &str) -> Option<String> {
-        let parts: Vec<&str> = token.split('.').collect();
-        let [user, exp, sig] = parts[..] else {
-            return None;
-        };
-        let want = self.mac(&format!("{user}.{exp}"));
-        let got = B64URL.decode(sig.trim_end_matches('=')).ok()?;
-        if !crate::util::same(&got, &want) {
-            return None;
-        }
-        if exp.parse::<f64>().ok()? < now_ms() as f64 {
-            return None;
-        }
-        Some(user.to_string())
+        self.tokens.check(token)
     }
 
     fn authorize(&self, headers: &HeaderMap) -> Option<String> {
@@ -247,7 +221,7 @@ impl MediaServer {
         let Ok(data) = tokio::fs::read(part).await else {
             return json(500, json!({"error": "internal-error"}));
         };
-        if crate::util::hex(&Sha256::digest(&data)) != id {
+        if xb_proto::util::hex(&Sha256::digest(&data)) != id {
             let _ = tokio::fs::remove_file(part).await;
             return json(400, json!({"error": "hash-mismatch"}));
         }
@@ -308,24 +282,4 @@ pub fn url_decode_pairs(q: &str) -> HashMap<String, String> {
             (form(k), form(v))
         })
         .collect()
-}
-
-/// %2F -> "/" (decodeURIComponent; bad escapes are left as they are).
-pub fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
-                out.push(h << 4 | l);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }

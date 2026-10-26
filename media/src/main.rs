@@ -29,8 +29,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
-use xb_server::media::MediaServer;
-use xb_server::util::log;
+use xb_media::MediaServer;
+use xb_proto::util::log;
 
 fn env(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.is_empty())
@@ -76,6 +76,8 @@ struct Stats {
 struct App {
     media: Arc<MediaServer>,
     stats: Stats,
+    /// Tests only (XB_TEST_ADMIN=1): POST /__test.
+    test_admin: bool,
 }
 
 fn content_length(h: &HeaderMap) -> u64 {
@@ -88,6 +90,23 @@ async fn handle(State(app): State<Arc<App>>, method: Method, uri: Uri, headers: 
     }
     if uri.path() == "/health" {
         return "ok".into_response();
+    }
+    // Tests only: {"fn":"expire"} ages every file past its TTL, then sweeps
+    // (the "files expire" test). -> how many were deleted
+    if app.test_admin && uri.path() == "/__test" && method == Method::POST {
+        let m = app.media.clone();
+        let n = tokio::task::spawn_blocking(move || {
+            let old = std::time::SystemTime::now() - Duration::from_millis(m.ttl_ms + 60_000);
+            for e in std::fs::read_dir(&m.dir).into_iter().flatten().flatten() {
+                if let Ok(f) = std::fs::File::options().write(true).open(e.path()) {
+                    let _ = f.set_modified(old);
+                }
+            }
+            m.sweep()
+        })
+        .await
+        .unwrap_or(0);
+        return n.to_string().into_response();
     }
     let p = uri.path();
     let kind = if p == "/upload" || p.starts_with("/upload/") {
@@ -118,7 +137,7 @@ async fn handle(State(app): State<Arc<App>>, method: Method, uri: Uri, headers: 
 async fn metrics(State(app): State<Arc<App>>) -> Response {
     let mut out = String::with_capacity(1024);
     for (name, k) in [("upload", &app.stats.upload), ("download", &app.stats.download)] {
-        let mut m = |metric: &str, kind: &str, help: &str, v: f64| xb_server::metrics::write_metric(&mut out, &format!("xb_media_{name}_{metric}"), kind, &format!("{name}s: {help}"), v);
+        let mut m = |metric: &str, kind: &str, help: &str, v: f64| xb_proto::prom::write_metric(&mut out, &format!("xb_media_{name}_{metric}"), kind, &format!("{name}s: {help}"), v);
         m("requests_total", "counter", "requests", k.requests.load(Relaxed) as f64);
         m("bytes_total", "counter", "bytes of file data", k.bytes.load(Relaxed) as f64);
         m("rejected_total", "counter", "refused (4xx: bad token, too big, not found)", k.rejected.load(Relaxed) as f64);
@@ -160,7 +179,7 @@ async fn main() -> std::io::Result<()> {
     }
 
     log("start", format!("xb-media on {host}:{port}, files in {}, links {public_url}/m/…", dir.display()));
-    let app = Arc::new(App { media, stats: Stats::default() });
+    let app = Arc::new(App { media, stats: Stats::default(), test_admin: env("XB_TEST_ADMIN").as_deref() == Some("1") });
     // Metrics on their own port, local by default (like the chat server's).
     let metrics_addr = env("XB_METRICS_ADDR").unwrap_or("127.0.0.1:9094".into());
     if metrics_addr != "none" {

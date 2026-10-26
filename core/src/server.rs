@@ -23,7 +23,6 @@
 
 use crate::codec::{Content, Node};
 use crate::frame::FrameDecoder;
-use crate::media::MediaServer;
 use crate::push::{PushResult, Pusher};
 use crate::store::{DeviceRec, PushRec, SignedKey, Store, StoredPrivacy};
 use crate::tokens::{GROUP_SERVER, USER_SERVER};
@@ -398,6 +397,14 @@ pub struct Shard {
     codes: HashMap<String, PendingCode>,
 }
 
+/// Where phones upload files (the media service, xb-media), and the
+/// tokens that let them: signed here, checked there.
+pub struct Uploads {
+    pub tokens: xb_proto::upload_token::UploadTokens,
+    /// The media service's public URL (<media_conn host>).
+    pub public_url: String,
+}
+
 pub struct Hub {
     shards: Vec<Mutex<Shard>>,
     /// Per shard: something to save (Store::dirty_flag), readable without the lock.
@@ -412,7 +419,8 @@ pub struct Hub {
     pub db: Arc<crate::db::Db>,
     pub saving: tokio::sync::Mutex<()>,
     pub cfg: Config,
-    pub media: Option<Arc<MediaServer>>,
+    /// Upload tokens for the media service, and its public URL (None: no media).
+    pub media: Option<Uploads>,
     pub push: Option<Arc<Pusher>>,
     pub private_key: [u8; 32],
     pub public_key: [u8; 32],
@@ -513,7 +521,7 @@ impl Multi<'_> {
 }
 
 impl Hub {
-    pub fn new(store: Store, db: Arc<crate::db::Db>, cfg: Config, media: Option<Arc<MediaServer>>, push: Option<Arc<Pusher>>, private_key: [u8; 32], public_key: [u8; 32]) -> Arc<Hub> {
+    pub fn new(store: Store, db: Arc<crate::db::Db>, cfg: Config, media: Option<Uploads>, push: Option<Arc<Pusher>>, private_key: [u8; 32], public_key: [u8; 32]) -> Arc<Hub> {
         let (cfg_handshakes, cfg_login_rate, cfg_login_burst) = (cfg.max_handshakes, cfg.login_rate, cfg.login_burst);
         let qdb = store.qdb.clone();
         let mut store = store;
@@ -2262,7 +2270,7 @@ fn iq_status(hub: &Arc<Hub>, s: &mut Session, node: &Node) -> IqResult {
 
 fn iq_media(hub: &Arc<Hub>, s: &mut Session) -> IqResult {
     let media = hub.media.as_ref().ok_or(serr_t("item-not-found", "media server disabled"))?;
-    let (token, expires) = media.issue_token(&s.peer.user().unwrap_or_default());
+    let (token, expires) = media.tokens.issue(&s.peer.user().unwrap_or_default());
     Ok(Some(vec![Node::new("media_conn").attr("host", &media.public_url).attr("auth_token", token).attr("ttl", (expires - now_ms()) / 1000)]))
 }
 

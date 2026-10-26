@@ -33,19 +33,26 @@ async function login(port, keys, user, register = false) {
 
 test('drain + takeover: clients told to come back spread out, nothing lost', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xb-drain-'));
-  const [port, webPort, metricsPort] = [await freePort(), await freePort(), await freePort()];
-  const env = {
-    XB_PORT: String(port),
-    XB_WEB_PORT: String(webPort),
-    XB_METRICS_ADDR: `127.0.0.1:${metricsPort}`,
-    XB_QUEUE_WRITE_DELAY_MS: '60000', // queued stanzas stay in memory only: the drain must save them
-    XB_DRAIN_SPREAD_S: '4',
-  };
   const keys = {};
   const users = ['alice', 'carol', ...Array.from({ length: 20 }, (_, i) => name(i))];
   for (const u of users) keys[u] = new MemoryKeyStore();
 
-  const old = await startRust({ dir, env });
+  // Fixed ports (the new process must take over the same ones). Another
+  // test running in parallel can grab a port we picked: then pick again.
+  let port, metricsPort, env, old;
+  for (let attempt = 0; !old; attempt++) {
+    [port, metricsPort] = [await freePort(), await freePort()];
+    env = {
+      XB_PORT: String(port),
+      XB_WEB_PORT: String(await freePort()),
+      XB_METRICS_ADDR: `127.0.0.1:${metricsPort}`,
+      XB_QUEUE_WRITE_DELAY_MS: '60000', // queued stanzas stay in memory only: the drain must save them
+      XB_DRAIN_SPREAD_S: '4',
+    };
+    old = await startRust({ dir, env }).catch((err) => {
+      if (attempt >= 2) throw err;
+    });
+  }
   (await login(port, keys, 'carol', true)).close(); // offline from now on
   const alice = await login(port, keys, 'alice', true);
   for (let i = 0; i < 100; i++) await alice.sendMessage('carol', `m${i}`);

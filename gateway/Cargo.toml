@@ -1,0 +1,15 @@
+# xb-gateway: holds phones' connections for a core (core/src/relay.rs).
+[package]
+name = "xb-gateway"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+xb-proto.workspace = true
+axum.workspace = true
+base64.workspace = true
+futures-util.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true

@@ -1,13 +1,11 @@
-//! Web gateway (server/gateway.js): the chat protocol for browsers on one
-//! HTTP origin.
+//! The server's web port (the Node server's server/gateway.js): the chat
+//! protocol for browsers on one HTTP origin.
 //!   /ws          WebSocket carrying the same bytes as TCP (header, Noise,
 //!                encrypted stanzas), one frame per WebSocket message
-//!   /upload, /m  the media server (same origin: no CORS needed)
+//!   /upload, /m  streamed through to the media service (same origin for the
+//!                web app; one port for phones)
 //!   everything else: the web app's static files, if one is configured
 
-use crate::media::{MediaServer, percent_decode};
-use crate::server::{Hub, serve};
-use crate::transport::{ConnRead, ConnWrite};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
@@ -19,6 +17,9 @@ use futures_util::StreamExt;
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use xb_core::server::{Hub, serve};
+use xb_core::transport::{ConnRead, ConnWrite};
+use xb_core::util::percent_decode;
 
 const SECURITY_HEADERS: [(&str, &str); 4] = [
     (
@@ -44,9 +45,8 @@ fn content_type(path: &Path) -> &'static str {
     }
 }
 
-pub struct Gateway {
+pub struct Web {
     pub hub: Arc<Hub>,
-    pub media: Option<Arc<MediaServer>>,
     /// Folder served at / (None = no web app).
     pub static_dir: Option<PathBuf>,
     /// Single files by URL path: "/shared/tokens.js" -> file.
@@ -54,13 +54,12 @@ pub struct Gateway {
     pub allowed_origins: Vec<String>,
     /// Tests only (XB_TEST_ADMIN=1): POST /__test reads the store.
     pub test_admin: bool,
-    /// Files are on a separate media service: /upload and /m/ are streamed
-    /// through to it (for apps that still use this port for media).
-    pub media_upstream: Option<String>,
+    /// The media service: /upload and /m/ are streamed through to it.
+    pub media_upstream: String,
     pub http: reqwest::Client,
 }
 
-pub fn router(gw: Arc<Gateway>) -> Router {
+pub fn router(gw: Arc<Web>) -> Router {
     Router::new().route("/ws", get(ws)).route("/__test", any(test_admin)).fallback(fallback).with_state(gw)
 }
 
@@ -72,7 +71,7 @@ fn text(status: u16, body: &'static str) -> Response {
     b.body(Body::from(body)).unwrap()
 }
 
-impl Gateway {
+impl Web {
     /// Same-origin pages are always allowed; others only if listed.
     fn origin_ok(&self, headers: &HeaderMap) -> bool {
         let Some(origin) = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok()) else {
@@ -139,7 +138,7 @@ fn inside(dir: &Path, rel: &str) -> Option<PathBuf> {
     (depth > 0).then_some(out)
 }
 
-async fn ws(State(gw): State<Arc<Gateway>>, method: Method, uri: Uri, headers: HeaderMap, upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>) -> Response {
+async fn ws(State(gw): State<Arc<Web>>, method: Method, uri: Uri, headers: HeaderMap, upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>) -> Response {
     let Ok(upgrade) = upgrade else {
         return gw.serve_static(&method, &uri).await;
     };
@@ -157,23 +156,18 @@ async fn ws(State(gw): State<Arc<Gateway>>, method: Method, uri: Uri, headers: H
     })
 }
 
-async fn fallback(State(gw): State<Arc<Gateway>>, method: Method, uri: Uri, headers: HeaderMap, body: Body) -> Response {
+async fn fallback(State(gw): State<Arc<Web>>, method: Method, uri: Uri, headers: HeaderMap, body: Body) -> Response {
     let p = uri.path();
     let is_media = p == "/upload" || p.starts_with("/upload/") || p.starts_with("/m/");
     if is_media {
-        if let Some(up) = &gw.media_upstream {
-            return pass_through(gw.as_ref(), up, method, uri, headers, body).await;
-        }
-        if let Some(media) = &gw.media {
-            return media.handle(method, uri, headers, body).await;
-        }
+        return pass_through(gw.as_ref(), &gw.media_upstream, method, uri, headers, body).await;
     }
     gw.serve_static(&method, &uri).await
 }
 
 /// Streams a media request to the media service and its answer back: no
 /// buffering, no disk, no hashing here (only the bytes pass through).
-async fn pass_through(gw: &Gateway, upstream: &str, method: Method, uri: Uri, headers: HeaderMap, body: Body) -> Response {
+async fn pass_through(gw: &Web, upstream: &str, method: Method, uri: Uri, headers: HeaderMap, body: Body) -> Response {
     let url = format!("{upstream}{}", uri.path_and_query().map(|p| p.as_str()).unwrap_or("/"));
     let Ok(m) = reqwest::Method::from_bytes(method.as_str().as_bytes()) else {
         return text(405, "Method Not Allowed");
@@ -190,8 +184,8 @@ async fn pass_through(gw: &Gateway, upstream: &str, method: Method, uri: Uri, he
     let res = match req.send().await {
         Ok(r) => r,
         Err(e) => {
-            crate::util::log("media", format!("media service unreachable: {e}"));
-            return text(502, "Bad Gateway");
+            xb_core::util::log("media", format!("media service unreachable: {e}"));
+            return text(502, "Bad Web");
         }
     };
     let mut b = Response::builder().status(res.status().as_u16());
@@ -200,18 +194,18 @@ async fn pass_through(gw: &Gateway, upstream: &str, method: Method, uri: Uri, he
             b = b.header(name, v.as_bytes());
         }
     }
-    b.body(Body::from_stream(res.bytes_stream())).unwrap_or_else(|_| text(502, "Bad Gateway"))
+    b.body(Body::from_stream(res.bytes_stream())).unwrap_or_else(|_| text(502, "Bad Web"))
 }
 
 /// Tests only: lets a test read the server's state, like the Node tests
 /// read `chat.store`. Off unless XB_TEST_ADMIN=1.
-async fn test_admin(State(gw): State<Arc<Gateway>>, body: String) -> Response {
+async fn test_admin(State(gw): State<Arc<Web>>, body: String) -> Response {
     if !gw.test_admin {
         return text(404, "Not Found");
     }
     let req: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
     let f = req["fn"].as_str().unwrap_or("");
     let arg = |i: usize| req["args"][i].as_str().unwrap_or("").to_string();
-    let out = crate::admin::call(&gw.hub, f, arg(0), arg(1)).await;
+    let out = xb_core::admin::call(&gw.hub, f, arg(0), arg(1)).await;
     out.to_string().into_response()
 }

@@ -1,0 +1,24 @@
+# Chat logic and data. No phone-facing HTTP; that's the server's web port.
+[package]
+name = "xb-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+xb-proto.workspace = true
+axum.workspace = true
+base64.workspace = true
+fjall.workspace = true
+hmac.workspace = true
+indexmap.workspace = true
+rand.workspace = true
+redb.workspace = true
+reqwest.workspace = true
+rsa.workspace = true
+scrypt.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+x25519-dalek.workspace = true
