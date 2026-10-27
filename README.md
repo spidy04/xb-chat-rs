@@ -1,6 +1,32 @@
-# xb-server (Rust)
+# xb-chat server (Rust)
 
-The xb-chat server in Rust: a complete port of the Node server in
+A WhatsApp-style messaging server written from scratch in Rust: binary
+XMPP (FunXMPP-style) over Noise, end-to-end encryption with the Signal
+protocol (Sender Keys for groups), redb and fjall storage with a write-back
+queue, replica pairs, connection gateways, and a separate media service.
+Built to learn how WhatsApp-class systems work by building one, following
+WhatsApp's published design where there is one.
+
+![System design: clients connect over Noise-encrypted binary XMPP, through a load balancer and optional gateways, to a primary and standby core with redb and fjall; files go to a separate media service; offline phones get a content-free push.](docs/system-design.png)
+
+Measured on one laptop (Ryzen 9 5900HX, load tool on the same machine):
+
+| | |
+|---|---|
+| messages through the full send, deliver, receipt cycle | **16,000/s**, none lost |
+| server memory per idle connected phone | **~8 KB** |
+| queued stanzas written to disk at 5,000 msg/s (write-back) | **0** of 151,090 |
+| failover to the standby, with every acknowledged message | **1.6 s** |
+
+The clients (Android in Kotlin, a web client, a Node client), the protocol
+specification (`PROTOCOL.md`) and the original Node server live in a
+companion repository, `xb-chat`, which isn't public yet. The links below
+into `../xb-chat` point there, and the integration tests in `tests-node/`
+need it next to this folder.
+
+## Where it came from
+
+This server started as a complete port of the Node server in
 [../xb-chat/server](../xb-chat/server). It speaks the same protocol
 ([PROTOCOL.md](../xb-chat/protocol/PROTOCOL.md)), takes the same settings,
 and uses **the same data folder**. You can stop the Node server and start
@@ -12,8 +38,15 @@ It keeps its data in a real database, though: see [Storage](#storage).
 cargo build --release
 ```
 
+Run the media service and the chat server side by side (both read the
+same data folder for the upload-token secret):
+
 ```bash
-XB_DATA=../xb-chat/data ./target/release/xb-server
+XB_DATA=./data ./target/release/xb-media
+```
+
+```bash
+XB_DATA=./data ./target/release/xb-server
 ```
 
 ## What it does
@@ -222,9 +255,11 @@ exported back to `state.json` they were all there.
   - write-through (`XB_QUEUE_WRITE_DELAY_MS=0`): all survive, even 50 ms later;
   - write-back: all survive once the delay has passed.
 
-WhatsApp covered that window with the replica node's memory. Here the
-replica pairs (step 6 of the plan) will do the same. Until then, set the
-delay to 0 if a lost message in a crash matters more than the disk work.
+WhatsApp covered that window with the replica node's memory, and so do
+the replica pairs here (see [Replica pairs](#replica-pairs-a-machine-can-die)):
+the standby holds a stanza within a fraction of a millisecond. A server
+running alone can set the delay to 0 if a lost message in a crash matters
+more than the disk work.
 
 **Swapping with the Node server** (it only knows `state.json`):
 
