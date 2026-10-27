@@ -21,7 +21,7 @@ pub fn load_or_create(path: &str) -> io::Result<([u8; 32], [u8; 32])> {
             let decoded = std::str::from_utf8(&raw).ok().and_then(|t| B64.decode(t.trim()).ok());
             let bytes = match decoded {
                 Some(b) => b,
-                // Lesson 3's format: 64 raw bytes, private then public.
+                // An older format: 64 raw bytes, private then public.
                 None if raw.len() == 64 => raw[..32].to_vec(),
                 None => return Err(bad(format!("{path}: not a base64 key"))),
             };

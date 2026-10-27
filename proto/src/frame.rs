@@ -8,8 +8,6 @@
 pub const MAX_FRAME: usize = 1024 * 1024;
 
 /// What can go wrong with frames.
-/// `#[derive(Debug, PartialEq)]` asks the compiler to write the code that
-/// prints it ({:?}) and compares it (==), so tests can check errors.
 #[derive(Debug, PartialEq)]
 pub enum FrameError {
     /// The other side announced a frame bigger than we accept.
@@ -17,17 +15,13 @@ pub enum FrameError {
 }
 
 /// Puts the 3-byte length in front of a payload, ready to send.
-///
-/// `&[u8]` is a *slice*: a borrowed view of some bytes (from a Vec, an
-/// array, a string…). We only need to read the payload, so we borrow it.
 pub fn encode(payload: &[u8]) -> Result<Vec<u8>, FrameError> {
     let n = payload.len();
     if n > MAX_FRAME {
         return Err(FrameError::TooLarge(n));
     }
-    // with_capacity: reserve room for 3 + n bytes up front.
     let mut out = Vec::with_capacity(3 + n);
-    out.push((n >> 16) as u8); // `as u8` keeps the lowest 8 bits
+    out.push((n >> 16) as u8);
     out.push((n >> 8) as u8);
     out.push(n as u8);
     out.extend_from_slice(payload);
@@ -42,15 +36,13 @@ pub struct FrameDecoder {
     max: usize,
 }
 
-// The methods of FrameDecoder.
 impl FrameDecoder {
-    /// A new, empty decoder. `Self` means "the type we're implementing", FrameDecoder.
+    /// A new, empty decoder that accepts frames up to `max` bytes.
     pub fn new(max: usize) -> Self {
         FrameDecoder { buf: Vec::new(), max }
     }
 
     /// Adds bytes that just arrived from the network.
-    /// `&mut self`: this method changes the decoder (its buffer grows).
     pub fn push(&mut self, bytes: &[u8]) {
         self.buf.extend_from_slice(bytes);
     }
@@ -61,43 +53,27 @@ impl FrameDecoder {
         self.buf.len()
     }
 
-    /// YOUR TURN: hand out the next complete frame, if there is one.
-    ///
-    /// Return:
-    ///   Ok(None)                    fewer than 3 bytes, or the frame isn't complete yet
-    ///   Err(FrameError::TooLarge(n)) the length says n bytes and n > self.max
-    ///   Ok(Some(payload))           a whole frame; also remove its 3 + n bytes from self.buf
-    ///
-    /// Steps (it's lesson 1's read_frame again, but on self.buf instead of a socket):
-    ///   1. if self.buf.len() < 3 → return Ok(None)
-    ///   2. n = the 3 length bytes, exactly like lesson 1 (self.buf[0], self.buf[1], self.buf[2])
-    ///   3. if n > self.max → return Err(FrameError::TooLarge(n))
-    ///   4. if self.buf.len() < 3 + n → return Ok(None)
-    ///   5. let payload = self.buf[3..3 + n].to_vec();   (copy bytes 3 up to 3+n)
-    ///   6. self.buf.drain(..3 + n);                       (remove the first 3+n bytes)
-    ///   7. Ok(Some(payload))
+    /// The next complete frame's payload, if one has arrived:
+    ///   Ok(None)                     fewer than 3 bytes, or the frame isn't complete yet
+    ///   Err(FrameError::TooLarge(n)) the length says n bytes, more than this decoder accepts
+    ///   Ok(Some(payload))            a whole frame, removed from the buffer
     pub fn next_frame(&mut self) -> Result<Option<Vec<u8>>, FrameError> {
         if self.buf.len() < 3 {
             return Ok(None);
         }
 
-        // read the length from the first 3 len
         let n = ((self.buf[0] as usize) << 16) | ((self.buf[1] as usize) << 8) | (self.buf[2] as usize);
 
-        // refuse frames that are too big
         if n > self.max {
             return Err(FrameError::TooLarge(n));
         }
 
-        // the length is known but is the whole frame here?
+        // The length is known: is the whole frame here yet?
         if self.buf.len() < 3 + n {
             return Ok(None);
         }
 
-        // copy the payload out (the bytes after the 3 length bytes.)
         let payload = self.buf[3..3 + n].to_vec();
-
-        // remove this frame from the buffer, so the next call starts at the next frame.
         self.buf.drain(..3 + n);
 
         // Empty again: give the memory back (an idle connection keeps none).
@@ -109,11 +85,10 @@ impl FrameDecoder {
     }
 }
 
-// Tests: compiled only for `cargo test`. They check the same things as the
-// Node test "frame decoder reassembles split and merged chunks".
+// The same checks as the Node test "frame decoder reassembles split and merged chunks".
 #[cfg(test)]
 mod tests {
-    use super::*; // everything from the module above
+    use super::*;
 
     #[test]
     fn encode_puts_the_length_first() {
@@ -152,7 +127,6 @@ mod tests {
         let mut frames = Vec::new();
         for piece in all.chunks(7) {
             d.push(piece);
-            // `while let`: keep taking frames as long as there are complete ones.
             while let Ok(Some(f)) = d.next_frame() {
                 frames.push(f);
             }
