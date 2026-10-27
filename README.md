@@ -4,8 +4,8 @@ A WhatsApp-style messaging server written from scratch in Rust: binary
 XMPP (FunXMPP-style) over Noise, end-to-end encryption with the Signal
 protocol (Sender Keys for groups), redb and fjall storage with a write-back
 queue, replica pairs, connection gateways, and a separate media service.
-Built to learn how WhatsApp-class systems work by building one, following
-WhatsApp's published design where there is one.
+Built to understand how WhatsApp-class systems work by building one,
+following WhatsApp's published design wherever it exists.
 
 ![System design: the Android app and the web client connect over Noise-encrypted binary XMPP to a load balancer, which sends them to the core directly or through optional gateways. The core is a primary and a standby kept in sync, each with redb and fjall. Files go to a separate media service; offline phones get a content-free push.](docs/system-design.png)
 
@@ -63,7 +63,7 @@ sending one; never use it where strangers can reach the server.
 
 - **Connections:** the client header, the Noise XX handshake, and AES-GCM
   frames with zlib, over TCP and WebSocket.
-- **Login:** phone number and SMS code; afterwards the device's own Noise
+- **Login:** phone number and SMS code; after that, the device's own Noise
   key; QR linking of companion devices (web), with rotating codes.
 - **Messages:** one queue per device, at-least-once delivery; acks,
   delivered and read receipts, read-self on your other devices.
@@ -85,7 +85,7 @@ a crate sees only what it declares.
 
 | Crate | What | Depends on |
 |---|---|---|
-| [proto](proto/src/lib.rs) | the wire: codec, framing, Noise transport, the server-to-server link, upload tokens, Prometheus format | — |
+| [proto](proto/src/lib.rs) | the wire: codec, framing, Noise transport, the server-to-server link, upload tokens, Prometheus format | - |
 | [core](core/src/lib.rs) | chat logic and data | proto |
 | [server](server/src/main.rs) | the `xb-server` program: core plus its web port | core, proto |
 | [gateway](gateway/src/main.rs) | the `xb-gateway` program: holds phones' connections for a core | proto |
@@ -132,10 +132,10 @@ in binary: common words are one-byte tokens from a shared dictionary,
 phone numbers pack two digits per byte, message ids pack as hex.
 
 ```
-<receipt id="3EB0C4A1F27B9D5E" to="919812345678@s.xb" type="read"/>     67 bytes as XML
+<receipt id="3EB0C4A1F27B9D5E" to="919812345678@s.xb" type="read"/>   67 bytes as XML
 
-f8 07 | 06 | 22 | fb 08 3e b0 c4 a1 f2 7b 9d 5e | 23 | fa ff 06 91 98 12 34 56 78 03 | 25 41     27 bytes
-list   receipt id   hex-packed id                to   number packed by digit, then s.xb   type read
+f8 07  06       22  fb 08 3e b0 c4 a1 f2 7b 9d 5e  23  fa ff 06 91 98 12 34 56 78 03  25 41   27 bytes
+list   receipt  id  id, hex-packed                 to  number packed, then s.xb       type read
 ```
 
 An ack goes from 59 bytes to 24, a presence from 53 to 16.
@@ -198,8 +198,8 @@ device logs in.
 5. The server keeps no history. An uncollected stanza is dropped after 30
    days.
 
-**Durability:** the sender's ack goes out before anything is written, as at
-WhatsApp. A single server that crashes inside the write delay loses those
+**Durability:** the sender's ack goes out before anything is written, as
+WhatsApp does. A single server that crashes inside the write delay loses those
 stanzas; a [replica pair](#replica-pairs-a-machine-can-die) covers that
 window, since the standby holds every stanza within a fraction of a
 millisecond. A server running alone can set the delay to 0 instead.
@@ -210,14 +210,15 @@ folder with a `state.json` and no `xb.redb` is imported on first start.
 
 ## Media
 
-Files are a separate process, `xb-media`, as WhatsApp's media servers are.
+Files are handled by a separate process, `xb-media`, as WhatsApp uses
+separate media servers.
 It has no chat state, so it can run on other machines, scale on its own,
 and fail without taking chat down. The chat server contains no media
 code: the two share only the upload-token format.
 
 1. The phone encrypts the file with a fresh random key (AES-256-GCM).
-2. It asks the chat server for an upload token: valid 10 minutes, signed
-   with a secret xb-media shares.
+2. It asks the chat server for an upload token, valid for 10 minutes and
+   signed with a secret shared with xb-media.
 3. It uploads the ciphertext. The file is named by its SHA-256, so a
    forwarded file is stored once and never uploaded again. Big files
    resume where a dropped connection stopped.
@@ -257,13 +258,13 @@ the same machine, so these are lower bounds:
 |---|---|---|
 | 5,000 msg/s | ack p50 9.4 ms, p99 50 ms | ack p50 **3.9 ms**, p99 **18 ms** |
 | 20,000 msg/s | collapses: 8,600 msg/s, acks take seconds | **16,000 msg/s**, nothing lost |
-| 40,000 msg/s | — | about 26,000 msg/s average, 51,000 at peak; CPU saturated |
+| 40,000 msg/s | - | about 26,000 msg/s average, 51,000 at peak; CPU saturated |
 
 **Memory per connection:** an idle connected phone costs about **8 KB**
 (16,000 idle connections measured). Getting there: no read buffer held
 while a socket is idle, handshake state boxed so each connection's task
-stays small, and boxed messages in the send queue. One million connected
-phones is about 8 GB; the 1M+ test itself needs a Linux machine and
+stays small, and boxed messages in the send queue. A million connected
+phones come to about 8 GB. Testing that many needs a Linux server and
 several load machines (Windows limits one load tool to about 16,000
 outgoing ports).
 
@@ -349,13 +350,14 @@ XB_CORE=core1:5400,core2:5400 XB_GATEWAY_SECRET=<secret> XB_HOST=0.0.0.0 XB_HTTP
 ```
 
 One encrypted link per gateway carries the decrypted stanzas, many to a
-frame and uncompressed (they're end-to-end ciphertext already). If the core
+frame and uncompressed (message contents are end-to-end encrypted already,
+so compression gains little). If the core
 restarts or fails over, gateways tell their phones to come back spread
 out, and connect to whichever core serves next.
 
 | 2,000 phones, 5,000 msg/s | Throughput | Delivery p50 / p99 | Core CPU | Gateway CPU |
 |---|---|---|---|---|
-| straight to the core | 4,923 msg/s | 8.6 / 50 ms | 76 s | — |
+| straight to the core | 4,923 msg/s | 8.6 / 50 ms | 76 s | - |
 | through a gateway | 5,020 msg/s | 4.9 / 29 ms | **37 s** | 77 s |
 
 The core's CPU halves; the encryption moves to the gateways, which you can
@@ -393,12 +395,12 @@ it off):
 | `XB_WEB_PORT` | 8080 | WebSocket `/ws`, the web app, media links |
 | `XB_HOST` | 127.0.0.1 | `0.0.0.0` to let other machines in |
 | `XB_DATA` | `./data` | data folder (`xb.redb`, `queue/`, `server_key`, `secret`, `pictures/`) |
-| `XB_APP_DIR` | — | a web app to host; `none` = no app |
+| `XB_APP_DIR` | - | a web app to host; `none` = no app |
 | `XB_PUBLIC_URL` | `http://<host>:<web port>` | public base URL of the web port |
-| `XB_ORIGINS` | — | extra allowed web origins, comma separated |
+| `XB_ORIGINS` | - | extra allowed web origins, comma separated |
 | `XB_SECRET` | generated, saved in `<data>/secret` | upload-token secret (shared with xb-media) |
-| `XB_OTP_ECHO` | — | `1` = return SMS codes to the client (development only) |
-| `XB_FCM_CREDENTIALS` | — | Firebase service-account JSON for push wake-ups |
+| `XB_OTP_ECHO` | - | `1` = return SMS codes to the client (development only) |
+| `XB_FCM_CREDENTIALS` | - | Firebase service-account JSON for push wake-ups |
 | `XB_MEDIA_URL` | the web port | the media service's public URL for file links |
 | `XB_MEDIA_UPSTREAM` | `http://127.0.0.1:8081` | where this process reaches the media service |
 | `XB_MAX_CONNECTIONS` | 1000000 | sockets above this are refused at once |
@@ -410,12 +412,12 @@ it off):
 | `XB_QUEUE_COLD_MS` | 300000 | an offline device's stanzas older than this leave memory |
 | `XB_METRICS_ADDR` | 127.0.0.1:9091 | monitoring port; `none` = off |
 | `XB_DRAIN_SPREAD_S` | 10 | a drain tells clients to come back within this |
-| `XB_TAKEOVER` | — | `1` = wait for the running server's ports and data (an upgrade) |
-| `XB_PEER` / `XB_REPL_ADDR` | — / 127.0.0.1:5300 | replica pair: the other node, and this one |
-| `XB_REPL_SECRET` | — | shared secret of the pair's link |
+| `XB_TAKEOVER` | - | `1` = wait for the running server's ports and data (an upgrade) |
+| `XB_PEER` / `XB_REPL_ADDR` | - / 127.0.0.1:5300 | replica pair: the other node, and this one |
+| `XB_REPL_SECRET` | - | shared secret of the pair's link |
 | `XB_NODE_ID` | `XB_REPL_ADDR` | the lower one serves if both start at once |
 | `XB_FAILOVER_S` | 10 | how long the standby waits for a vanished primary |
-| `XB_GATEWAY_ADDR` / `XB_GATEWAY_SECRET` | — | where connection gateways connect, and their secret |
+| `XB_GATEWAY_ADDR` / `XB_GATEWAY_SECRET` | - | where connection gateways connect, and their secret |
 
 ## Testing
 
@@ -425,8 +427,16 @@ cargo test --workspace
 
 - **Unit tests:** the codec against stanzas recorded from a reference
   implementation, framing, upload tokens, helpers.
-- **Fuzzing,** in pure Rust (no libFuzzer, so no C++ compiler), run as part
-  of `cargo test`:
+- **Fuzzing,** in pure Rust (no libFuzzer, so no C++ compiler needed), run
+  as part of `cargo test`. A failure prints its `XB_FUZZ_SEED`, which
+  replays it. A 200,000-input run per fuzzer found nothing.
+- **Integration tests** drive the real Android, web and test clients
+  against this server: chat, end-to-end encryption, multi-device, groups
+  with Sender Keys, media, crashes, drain and takeover, replica-pair
+  failover, gateways, overload. They live with the clients and will be
+  published with them.
+
+The fuzzers:
 
 | Fuzzer | What it throws | Must hold |
 |---|---|---|
@@ -435,13 +445,11 @@ cargo test --workspace
 | `fuzz_cipher_never_panics` | garbage, junk inside valid encryption, fake compression, a real zlib bomb | decryption never panics, and a bomb is capped |
 | `fuzz_stanzas_never_panic_or_deadlock` | random, nearly valid stanzas of every kind from logged-in users, against the real handlers | no handler panics, and no deadlock between shards |
 
-  For a long run: `XB_FUZZ_ITERS=1000000 cargo test --release --workspace fuzz_`. A failure prints its `XB_FUZZ_SEED`, which replays it. A 200,000-input run per fuzzer found nothing.
+For a long run:
 
-- **Integration tests** drive the real Android, web and test clients
-  against this server: chat, end-to-end encryption, multi-device, groups
-  with Sender Keys, media, crashes, drain and takeover, replica-pair
-  failover, gateways, overload. They live with the clients and will be
-  published with them.
+```bash
+XB_FUZZ_ITERS=1000000 cargo test --release --workspace fuzz_
+```
 
 ## What comes from WhatsApp, and what is ours
 
@@ -453,6 +461,6 @@ cargo test --workspace
 | Paired servers replicating each other, in-memory data with write-back, ~2M connections per server | WhatsApp engineering talks (2012, 2014) |
 | redb and fjall, the 5 s write-back, drain and takeover, the gateway split, `phash` checks for groups | our own design, in the spirit of the above |
 
-## Licence
+## License
 
 [MIT](LICENSE)

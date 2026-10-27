@@ -7,9 +7,9 @@
 //! connections, the part that runs out first at millions of phones (memory,
 //! sockets, crypto), spread over as many gateways as needed.
 //!
-//!   phones ──► gateway 1 ─┐
-//!   phones ──► gateway 2 ─┼──► core (+ its standby, replica.rs)
-//!   phones ──► gateway 3 ─┘
+//!   phones --> gateway 1 --+
+//!   phones --> gateway 2 --+--> core (+ its standby, replica.rs)
+//!   phones --> gateway 3 --+
 //!
 //! On the link (stanzas, encrypted with XB_GATEWAY_SECRET, replica.rs Link):
 //!   core -> gateway   keys (the server's private key, so it is the same server)
