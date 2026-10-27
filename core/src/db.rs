@@ -7,7 +7,7 @@
 //! all records marked since the last save in ONE transaction. Under load, many
 //! changes share one disk sync ("group commit").
 //!
-//! Each record is a small JSON value (the same shapes as Node's state.json),
+//! Each record is a small JSON value (the same shapes as the state.json snapshot),
 //! so the file stays easy to inspect, export and migrate.
 
 use crate::server::Hub;
@@ -100,7 +100,7 @@ impl Db {
             let rec: PrekeyRec = serde_json::from_slice(v.value()).map_err(|e| err(format!("prekeys {user}/{dev}: {e}")))?;
             store.prekeys.entry(user.to_string()).or_default().insert(dev.to_string(), rec);
         }
-        // Device ids in numeric order, as Node has them after a restart.
+        // Device ids in numeric order (the order JSON object keys load in).
         for devs in store.prekeys.values_mut() {
             let order: Vec<String> = js_key_order(devs.keys()).into_iter().cloned().collect();
             *devs = order
@@ -346,7 +346,7 @@ pub async fn writer(hub: Arc<Hub>, notify: Arc<tokio::sync::Notify>) {
     }
 }
 
-/// Writes the state as a Node-format state.json (atomic: temp file + rename).
+/// Writes the whole state as one JSON snapshot, state.json (atomic: temp file + rename).
 pub fn write_json(store: &Store, file: &std::path::Path) -> std::io::Result<()> {
     let tmp = file.with_extension(format!("json.{}.tmp", std::process::id()));
     std::fs::write(&tmp, store.snapshot())?;
@@ -392,12 +392,12 @@ pub fn open_store(data: &std::path::Path, reimport: bool) -> std::io::Result<(St
             db.clear_legacy_queue()?;
             log("store", format!("moved {} queued stanzas from xb.redb to {}", legacy.len(), qpath.display()));
         }
-        // The Node server only knows state.json: if it ran here after us, its
-        // changes are in there and not in xb.redb.
+        // A state.json newer than xb.redb holds changes made elsewhere (another
+        // tool or server working from the snapshot), not in xb.redb.
         let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
         if let (Some(j), Some(d)) = (modified(&json), modified(&path)) {
             if j > d {
-                log("store", "WARNING: state.json is newer than xb.redb (did the Node server run here?). Using xb.redb; to switch to state.json run: xb-server import-json");
+                log("store", "WARNING: state.json is newer than xb.redb (written after this server last ran?). Using xb.redb; to switch to state.json run: xb-server import-json");
             }
         }
     }

@@ -1,9 +1,9 @@
 //! The server's identity: a long-term X25519 key pair.
 //!
 //! Clients pin the server's public key, so it must survive restarts. The
-//! file holds the private key in base64, the same format as the Node server
-//! (<data>/server_key), so both servers can run on the same data folder and
-//! phones keep trusting it. The public key is computed from the private one.
+//! file holds the private key in base64 (<data>/server_key), so a restarted
+//! or replacement server on the same data keeps the identity phones trust.
+//! The public key is computed from the private one.
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;

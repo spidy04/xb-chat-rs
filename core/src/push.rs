@@ -1,4 +1,4 @@
-//! Push wake-ups (server/push.js): when a message waits for a phone that is
+//! Push wake-ups: when a message waits for a phone that is
 //! not connected, ask Firebase Cloud Messaging to wake it. The push carries
 //! no content, only "you have messages"; the phone connects and takes its queue.
 //!

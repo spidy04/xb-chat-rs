@@ -6,10 +6,9 @@
 #   gateway  xb-gateway: holds phones' connections for a core
 #   media    xb-media: encrypted files only
 #   loadgen  the load test tool
-#   tunnel   xb-tunnel: reach a server behind NAT through a public relay (like ngrok)
 [workspace]
 resolver = "3"
-members = ["proto", "core", "server", "gateway", "media", "loadgen", "tunnel"]
+members = ["proto", "core", "server", "gateway", "media", "loadgen"]
 
 [workspace.package]
 version = "0.1.0"

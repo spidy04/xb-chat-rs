@@ -7,7 +7,7 @@ queue, replica pairs, connection gateways, and a separate media service.
 Built to learn how WhatsApp-class systems work by building one, following
 WhatsApp's published design where there is one.
 
-![System design: clients connect over Noise-encrypted binary XMPP, through a load balancer and optional gateways, to a primary and standby core with redb and fjall; files go to a separate media service; offline phones get a content-free push.](docs/system-design.png)
+![System design: the Android app and the web client connect over Noise-encrypted binary XMPP to a load balancer, which sends them to the core directly or through optional gateways. The core is a primary and a standby kept in sync, each with redb and fjall. Files go to a separate media service; offline phones get a content-free push.](docs/system-design.png)
 
 Measured on one laptop (Ryzen 9 5900HX, load tool on the same machine):
 
@@ -18,28 +18,33 @@ Measured on one laptop (Ryzen 9 5900HX, load tool on the same machine):
 | queued stanzas written to disk at 5,000 msg/s (write-back) | **0** of 151,090 |
 | failover to the standby, with every acknowledged message | **1.6 s** |
 
-The clients (Android in Kotlin, a web client, a Node client), the protocol
-specification (`PROTOCOL.md`) and the original Node server live in a
-companion repository, `xb-chat`, which isn't public yet. The links below
-into `../xb-chat` point there, and the integration tests in `tests-node/`
-need it next to this folder.
+The clients (Android in Kotlin, a web client) and the protocol
+specification (`PROTOCOL.md`) are in a separate repository, to be
+published later.
 
-## Where it came from
+## Contents
 
-This server started as a complete port of the Node server in
-[../xb-chat/server](../xb-chat/server). It speaks the same protocol
-([PROTOCOL.md](../xb-chat/protocol/PROTOCOL.md)), takes the same settings,
-and uses **the same data folder**. You can stop the Node server and start
-this one (or the other way round), and phones, the web app and the Node
-client keep working: same server key, same accounts, same queued messages.
-It keeps its data in a real database, though: see [Storage](#storage).
+- [Build and run](#build-and-run)
+- [What the server does](#what-the-server-does)
+- [The code](#the-code)
+- [The protocol](#the-protocol)
+- [Storage](#storage)
+- [Media](#media)
+- [Performance](#performance)
+- [Resilience](#resilience): overload, upgrades, replica pairs, gateways
+- [Monitoring](#monitoring)
+- [Settings](#settings)
+- [Testing](#testing)
+- [What comes from WhatsApp, and what is ours](#what-comes-from-whatsapp-and-what-is-ours)
+
+## Build and run
 
 ```bash
 cargo build --release
 ```
 
-Run the media service and the chat server side by side (both read the
-same data folder for the upload-token secret):
+Run the media service and the chat server side by side. Both read the
+same data folder, which holds the upload-token secret:
 
 ```bash
 XB_DATA=./data ./target/release/xb-media
@@ -49,269 +54,29 @@ XB_DATA=./data ./target/release/xb-media
 XB_DATA=./data ./target/release/xb-server
 ```
 
-## What it does
+Phones connect on port 5222 (TCP), browsers on 8080 (WebSocket at `/ws`).
+For phones on the same network, add `XB_HOST=0.0.0.0`. During development,
+`XB_OTP_ECHO=1` returns the SMS login code to the client instead of
+sending one; never use it where strangers can reach the server.
 
-Everything the Node server does:
+## What the server does
 
-- **Connections:** the `XB 2 1` header, the Noise XX handshake, and AES-GCM frames with zlib, over TCP and WebSocket (`/ws`).
-- **The binary codec:** FunXMPP layout, byte for byte the same as `codec.js` (tested against bytes from the Node codec).
-- **Login:**
-  - phone number and SMS code;
-  - the device key alone;
-  - QR linking of companions, with rotating codes;
-  - the legacy password (`XB_LEGACY_PASSWORD=1`).
-- **Multi-device:**
-  - a queue per device, with at-least-once delivery;
-  - acks and delivered/read receipts, plus read-self on your other devices;
-  - `stale-devices` checks for end-to-end encryption;
-  - group messages with sender keys: one ciphertext for the whole group, checked against the device list by `phash` (PROTOCOL.md §10.5).
-- **Keys and the rest:**
-  - pre-keys and bundles;
-  - groups;
-  - presence, last seen and typing;
-  - profile name, About and photo;
-  - privacy settings and "My contacts";
-  - contact discovery.
-- **Media:** uploads, resumable uploads, downloads, HMAC tokens, and expiry after 30 days.
-- **Push:** FCM wake-ups. It signs the OAuth JWT with the service-account key and calls FCM HTTP v1.
-- **Web:** serves the web app with the same security headers, and checks the WebSocket origin.
-
-## Settings
-
-The same environment variables as `server/main.js`:
-
-| Variable | Default | |
-|---|---|---|
-| `XB_PORT` | 5222 | chat port (TCP) |
-| `XB_WEB_PORT` | 8080 | WebSocket `/ws`, media, web app |
-| `XB_HOST` | 127.0.0.1 | `0.0.0.0` to let phones on Wi-Fi in |
-| `XB_DATA` | `./data` | data folder (`xb.redb`, `queue/`, `server_key`, `secret`, `media/`, `pictures/`) |
-| `XB_ROOT` | `../xb-chat` | the xb-chat repository: web app and its shared protocol files |
-| `XB_APP_DIR` | `<XB_ROOT>/clients/web` | web app to host; `none` = no app |
-| `XB_PUBLIC_URL` | `http://<host>:<web port>` | base URL put in media links |
-| `XB_ORIGINS` | — | extra allowed web origins, comma separated |
-| `XB_SECRET` | generated, saved in `<data>/secret` | media token secret |
-| `XB_OTP_ECHO` | — | `1` = return SMS codes to the client (development) |
-| `XB_LEGACY_PASSWORD` | — | `1` = allow username + password accounts |
-| `XB_FCM_CREDENTIALS` | — | Firebase service-account JSON for push wake-ups |
-| `XB_MEDIA_URL` | — | public URL of a separate media service (`xb-media`); this process then stores no files |
-| `XB_MEDIA_UPSTREAM` | `XB_MEDIA_URL` | where this process reaches the media service, if different |
-| `XB_MAX_CONNECTIONS` | 1000000 | sockets above this are refused at once |
-| `XB_MAX_HANDSHAKES` | 1024 | Noise handshakes running at the same time |
-| `XB_LOGIN_RATE` / `XB_LOGIN_BURST` | 5000 / 10000 | logins a second (and bursts); more are told `busy` |
-| `XB_SEND_QUEUE_MAX` | 16 MB | a connection's unsent bytes; past this it's too slow, and closed |
-| `XB_WRITE_TIMEOUT_MS` | 30000 | one write that takes longer: the reader is too slow, and closed |
-| `XB_QUEUE_WRITE_DELAY_MS` | 5000 | write-back: a queued stanza is written only if still undelivered after this; 0 = at once |
-| `XB_QUEUE_COLD_MS` | 300000 | an offline device's queued stanzas older than this leave memory |
-| `XB_METRICS_ADDR` | 127.0.0.1:9091 | `/metrics`, `/health`, `/ready`, `POST /drain` (local only by default); `none` = off |
-| `XB_DRAIN_SPREAD_S` | 10 | a drain tells clients to come back within this many seconds |
-| `XB_TAKEOVER` | — | `1` = wait for the running server's ports and data (an upgrade) |
-| `XB_PEER` | — | the other node of a replica pair (its `XB_REPL_ADDR`) |
-| `XB_REPL_ADDR` | 127.0.0.1:5300 | this node's replication address |
-| `XB_REPL_SECRET` | — | shared secret of the pair's link |
-| `XB_NODE_ID` | `XB_REPL_ADDR` | the lower one serves if both start at once |
-| `XB_FAILOVER_S` | 10 | how long the standby waits for a vanished primary |
-| `XB_GATEWAY_ADDR` | — | where connection gateways connect (xb-gateway) |
-| `XB_GATEWAY_SECRET` | — | shared secret of the gateways' link |
-
-**The phone setup from [SETUP.md](../xb-chat/docs/SETUP.md):**
-
-```bash
-XB_HOST=0.0.0.0 XB_DATA=../xb-chat/data-test XB_PORT=15222 XB_WEB_PORT=18080 XB_OTP_ECHO=1 XB_FCM_CREDENTIALS=../xb-chat/data-test/fcm-service-account.json ./target/release/xb-server
-```
-
-**The firewall:** Windows lets `node.exe` accept connections from the
-phone, but it asks again for a new program. The first time `xb-server.exe`
-listens on `0.0.0.0`, allow it on **private** networks.
-
-**Don't run both servers on one data folder at the same time.** Taking
-turns is fine (see below). Two Rust servers can't: the second one can't open
-`xb.redb`.
-
-## Media as its own service
-
-Files are always a separate process, `xb-media`, like WhatsApp's separate
-media servers. It has no chat state at all, so it can sit on other
-machines, scale on its own, and fail without taking chat down. The chat
-server contains no media code: the two share only the upload-token format
-([proto/src/upload_token.rs](proto/src/upload_token.rs)).
-
-On one machine, run the two side by side; nothing to configure:
-
-```bash
-./target/release/xb-media      # files, on 127.0.0.1:8081
-./target/release/xb-server     # chat; passes /upload and /m/ through to it
-```
-
-How the two share the work:
-
-- **Tokens:** the chat server issues upload tokens (over the encrypted chat
-  connection). `xb-media` checks them with the **same secret**,
-  `XB_SECRET` or the shared `<data>/secret`.
-- **Where clients go:** by default the links point at the chat server's
-  web port (`XB_PUBLIC_URL`), which streams them through to the media
-  service (`XB_MEDIA_UPSTREAM`, default `http://127.0.0.1:8081`) with no
-  buffering, no disk and no hashing; only the bytes pass. So phones need
-  one port, and links already in old messages keep working.
-- **Directly:** set `XB_MEDIA_URL` to the media service's public address
-  and clients upload and download there, not through the chat server.
-- **Android** now goes wherever the server says. Only a loopback address
-  (a development server saying `127.0.0.1`) is replaced by the server host
-  the phone is set to, keeping the port.
-- **CORS:** `xb-media` answers it for web pages (the tokens are bearer
-  tokens, never cookies).
-
-| `xb-media` setting | Default | |
-|---|---|---|
-| `XB_MEDIA_HOST` / `XB_MEDIA_PORT` | 127.0.0.1 / 8081 | where it listens |
-| `XB_DATA` / `XB_MEDIA_DIR` | `./data` / `<data>/media` | where the secret and the files are |
-| `XB_MEDIA_PUBLIC_URL` | `http://<host>:<port>` | base of the file links |
-| `XB_MEDIA_MAX_MB` | 64 | largest file |
-
-**Measured, same laptop**, before media left the chat server for good
-(chat at 5,000 msg/s while 24 workers upload unique 8 MB files at
-310–350 MB/s, three runs each):
-- with media in the chat process, ack p99 was 36–40 ms;
-- with media in `xb-media`, it was 32–42 ms.
-
-So on one machine the split doesn't change chat latency: both processes
-share the same CPU and disk, and the async server already copes with heavy
-uploads. What the split buys:
-
-- **Fault isolation**, tested
-  ([tests-node/media-split.test.js](tests-node/media-split.test.js)):
-  `xb-media` is killed in the middle of a chat, and messages keep flowing.
-  Uploads fail, and the old path answers 502, until it's back.
-- **Media on other machines**, scaled on their own, or object storage
-  behind it later.
-
-Every test server runs with its own `xb-media`. With
-`XB_RS_SPLIT_MEDIA=1`, the links point at the media service directly
-instead of through the chat server.
-
-## Storage
-
-Two embedded stores, both pure Rust, each suited to its kind of data (the
-same split WhatsApp makes):
-
-| Store | Holds | Why this one |
-|---|---|---|
-| **`<data>/xb.redb`**, [redb](https://www.redb.org) (a B-tree with ACID transactions) | accounts, devices, keys, groups, last seen | read-mostly, must never be lost |
-| **`<data>/queue/`**, [fjall](https://github.com/fjall-rs/fjall) (an LSM tree) | the offline queue | almost all "append, then delete soon", which an LSM writes sequentially |
-
-**Memory is the fast path** (like WhatsApp's Mnesia): everything is read
-from memory, and the stores only make it durable.
-
-**Records (redb):**
-- every change marks the record it touched (one user, one device list…);
-- a writer task saves all records marked since its last save in **one
-  transaction**, so under load many changes share one disk sync (group
-  commit);
-- each record is JSON, in the same shapes as Node's `state.json`.
-
-**The offline queue (fjall), write-back** (WhatsApp's write-back cache):
-- a queued stanza stays only in memory for its first
-  `XB_QUEUE_WRITE_DELAY_MS` (5 s by default);
-- it's written only if it's still undelivered after that, and deleted again
-  once delivered;
-- nearly every message and receipt is delivered sooner, so it **never
-  touches the disk**.
-
-Measured at 5,000 msg/s for 15 s (2,000 phones, about 75,600 messages):
-
-| | write-through (delay 0) | write-back (5 s) |
-|---|---|---|
-| queued stanzas written to disk, then deleted again | 143,851 + 143,851 | **0 + 0** |
-| delivered before being written | 7,419 | **151,090** (all) |
-| time committing to disk | 7.5 s | **0.68 s** (only account records) |
-
-**Cold queues leave memory:** a device that stays offline keeps its
-stanzas on disk only (`XB_QUEUE_COLD_MS`, 5 min). After a restart the
-queue loads as an index, and stanzas are read back from disk when their
-device logs in.
-
-| Table (redb) | Key | Value |
-|---|---|---|
-| `users` | user | account, profile, privacy, contacts |
-| `last_seen` | user | ms |
-| `devices` | user | that user's devices (Noise key → record) |
-| `prekeys` | (user, device) | identity, signed pre-key, one-time pre-keys |
-| `groups` | group id | subject, creator, members |
-| `meta` | name | counters, format version |
-
-The queue (fjall): key `owner NUL dedup key`, value `arrival order | time | encoded stanza`.
-
-**Migration:** an older version kept the queue in redb, and the first start
-moves it. Tried on a copy of real data, all 1,318 queued stanzas moved, and
-exported back to `state.json` they were all there.
-
-**Durability, the trade-off:**
-- the sender's ack goes out before anything is written, as at WhatsApp;
-- **records** are saved within milliseconds;
-- **queued stanzas** are written after the write delay. A crash inside it
-  loses those stanzas, though the sender already saw one tick.
-- [tests-node/crash.test.js](tests-node/crash.test.js) checks both modes,
-  with a hard kill right after 200 acknowledged messages:
-  - write-through (`XB_QUEUE_WRITE_DELAY_MS=0`): all survive, even 50 ms later;
-  - write-back: all survive once the delay has passed.
-
-WhatsApp covered that window with the replica node's memory, and so do
-the replica pairs here (see [Replica pairs](#replica-pairs-a-machine-can-die)):
-the standby holds a stanza within a fraction of a millisecond. A server
-running alone can set the delay to 0 if a lost message in a crash matters
-more than the disk work.
-
-**Swapping with the Node server** (it only knows `state.json`):
-
-- **First start** on a folder that has a `state.json` and no `xb.redb`:
-  it's imported automatically.
-- **Rust → Node:** stop the Rust server, then write `state.json` for Node:
-
-  ```bash
-  ./target/release/xb-server export-json
-  ```
-
-- **Node → Rust again:** stop Node, then read its `state.json` back in
-  (this replaces `xb.redb`):
-
-  ```bash
-  ./target/release/xb-server import-json
-  ```
-
-  If you forget, the server warns that `state.json` is newer than
-  `xb.redb`, and keeps using `xb.redb`.
-
-Both commands use `XB_DATA` like the server.
-
-## Tests
-
-1. Unit tests (codec fixtures from Node, framing, helpers):
-
-   ```bash
-   cargo test --workspace
-   ```
-
-2. The Node integration tests, run against this server. These are copies of
-   `../xb-chat/test/{e2e,e2ee,multidevice,web}.test.js`, made by
-   `tests-node/port-tests.py`: the same clients and assertions, with a
-   different server underneath. After `cargo build`:
-
-   ```bash
-   node --test --test-concurrency=1 tests-node/
-   ```
-
-   The `XB_TEST_ADMIN=1` hooks let the tests read the store. Never set them in
-   production.
-
-3. [tests-node/swap.test.js](tests-node/swap.test.js): Node → Rust → Node
-   → Rust on one data folder, with `export-json` and `import-json`.
-4. [tests-node/crash.test.js](tests-node/crash.test.js): a hard kill after
-   200 acknowledged messages loses none of them.
-
-The state on 26 October 2026: 17 unit tests (with the 4 fuzzers) and 74 Node tests pass, and the 59 protocol tests also pass through a connection gateway (`XB_RS_VIA_GATEWAY=1`). Earlier, a 200,000-input fuzz run per fuzzer found no panic or deadlock. It was
-also checked against the real Android app over Wi-Fi: an FCM wake-up, the
-phone logging in with its device key, the queued messages, and the delivered
-receipts.
+- **Connections:** the client header, the Noise XX handshake, and AES-GCM
+  frames with zlib, over TCP and WebSocket.
+- **Login:** phone number and SMS code; afterwards the device's own Noise
+  key; QR linking of companion devices (web), with rotating codes.
+- **Messages:** one queue per device, at-least-once delivery; acks,
+  delivered and read receipts, read-self on your other devices.
+- **End-to-end encryption support:** pre-keys and bundles; `stale-devices`
+  checks so senders always encrypt for exactly the right devices; group
+  messages with Sender Keys, checked against the device list by `phash`.
+- **The rest:** groups, presence, last seen and typing; profile name, About
+  and photo; privacy settings including "My contacts"; contact discovery.
+- **Push:** content-free FCM wake-ups for offline phones (signs the OAuth
+  JWT with the service-account key, calls FCM HTTP v1).
+- **Web port:** WebSocket for browsers, the web app's files with strict
+  security headers, an origin check, and `/upload` and `/m/` passed through
+  to the media service.
 
 ## The code
 
@@ -320,228 +85,225 @@ a crate sees only what it declares.
 
 | Crate | What | Depends on |
 |---|---|---|
-| [proto](proto/src/lib.rs) | the wire: everything two programs must agree on | — |
+| [proto](proto/src/lib.rs) | the wire: codec, framing, Noise transport, the server-to-server link, upload tokens, Prometheus format | — |
 | [core](core/src/lib.rs) | chat logic and data | proto |
-| [server](server/src/main.rs) | the `xb-server` program: core + its web port | core, proto |
-| [gateway](gateway/src/main.rs) | the `xb-gateway` program | proto |
-| [media](media/src/lib.rs) | the `xb-media` program: files only | proto |
-| [loadgen](loadgen/src/main.rs) | the load test tool | proto |
-| [tunnel](tunnel/src/main.rs) | `xb-tunnel`: reach a server behind NAT through a public relay | proto |
+| [server](server/src/main.rs) | the `xb-server` program: core plus its web port | core, proto |
+| [gateway](gateway/src/main.rs) | the `xb-gateway` program: holds phones' connections for a core | proto |
+| [media](media/src/lib.rs) | the `xb-media` program: encrypted files only | proto |
+| [loadgen](loadgen/src/main.rs) | the load test tool: many simulated phones | proto |
 
-| File | What | Node original |
-|---|---|---|
-| [server/src/main.rs](server/src/main.rs) | settings, startup, timers, the writer task, drain, `export-json` / `import-json` | `server/main.js` |
-| [server/src/web.rs](server/src/web.rs) | the web port: `/ws`, static web app, media pass-through | `server/gateway.js`, `ws.js` |
-| [proto/src/transport.rs](proto/src/transport.rs) | header, Noise (snow), AES-GCM frames, zlib; TCP or WebSocket | `protocol/transport.js`, `noise.js` |
-| [proto/src/frame.rs](proto/src/frame.rs) | 3-byte length frames | `protocol/framing.js` |
-| [proto/src/codec.rs](proto/src/codec.rs), [proto/src/tokens.rs](proto/src/tokens.rs) | binary stanzas | `protocol/codec.js`, `tokens.js` |
-| [proto/src/link.rs](proto/src/link.rs) | the encrypted link between servers | — |
-| [proto/src/upload_token.rs](proto/src/upload_token.rs) | media upload tokens (server issues, media checks) | in `server/media.js` |
-| [core/src/server.rs](core/src/server.rs) | sessions, login, routing, receipts, iq handlers | `server/server.js`, `server/auth/*` |
-| [core/src/store.rs](core/src/store.rs) | accounts, devices, keys, groups, queues, in memory; marks what changed | `server/store.js` |
-| [core/src/db.rs](core/src/db.rs) | redb tables: load at start, save changed records in one transaction; the writer task | — (Node: the `state.json` snapshot) |
-| [core/src/queue_db.rs](core/src/queue_db.rs) | the offline queue on fjall (LSM): write-back, cold stanzas read back | — |
-| [core/src/replica.rs](core/src/replica.rs) | replica pairs | — |
-| [core/src/relay.rs](core/src/relay.rs) | the core's side of connection gateways | — |
-| [core/src/push.rs](core/src/push.rs) | FCM | `server/push.js` |
-| [core/src/keys.rs](core/src/keys.rs) | the server's key file | `loadServerKey` in `main.js` |
-| [core/src/admin.rs](core/src/admin.rs) | test-only hooks | — |
-| [media/src/lib.rs](media/src/lib.rs), [media/src/main.rs](media/src/main.rs) | upload/download, resumable, expiry; the service | `server/media.js` |
-| [gateway/src/main.rs](gateway/src/main.rs) | the connection gateway | — |
-| [loadgen/src/main.rs](loadgen/src/main.rs) | load test: many simulated phones | — |
+| File | What |
+|---|---|
+| [proto/src/codec.rs](proto/src/codec.rs), [tokens.rs](proto/src/tokens.rs) | binary stanzas |
+| [proto/src/frame.rs](proto/src/frame.rs) | 3-byte length framing |
+| [proto/src/transport.rs](proto/src/transport.rs) | header, Noise (snow), AES-GCM frames, zlib; TCP or WebSocket |
+| [proto/src/link.rs](proto/src/link.rs) | the encrypted link between servers |
+| [proto/src/upload_token.rs](proto/src/upload_token.rs) | media upload tokens: the core signs, xb-media checks |
+| [core/src/server.rs](core/src/server.rs) | sessions, login, routing, receipts, iq handlers |
+| [core/src/store.rs](core/src/store.rs) | accounts, devices, keys, groups, queues, in memory; marks what changed |
+| [core/src/db.rs](core/src/db.rs) | redb tables, the writer task, group commit |
+| [core/src/queue_db.rs](core/src/queue_db.rs) | the offline queue on fjall |
+| [core/src/replica.rs](core/src/replica.rs) | replica pairs |
+| [core/src/relay.rs](core/src/relay.rs) | the core's side of connection gateways |
+| [core/src/push.rs](core/src/push.rs) | FCM wake-ups |
+| [server/src/web.rs](server/src/web.rs) | the web port |
 
 **How it's built:**
-- Each connection is a tokio task, and a second task writes its encrypted
-  frames, fed by a channel.
-- The shared state is split into **64 shards by `hash(user)`**. Each shard
-  has its own lock and holds those users' accounts, devices, keys, queues,
-  connections and presence watchers. A group lives in the shard of
-  `hash(group id)`; each member's shard keeps an index of their groups.
-- **No deadlocks, by one rule:** a handler holds one shard, or several taken
-  together in ascending order (a 1:1 message takes sender + recipient; a
-  group message takes the members' shards). It never takes a lock while
-  holding one. Locks are never held across an `.await`, so each handler is
-  plain synchronous code, like the single-threaded Node version.
-- The only slow work runs outside the locks: password hashing (on a
-  blocking thread), FCM calls and database commits.
-- The same split is the plan for several machines: a shard per node instead
-  of per lock.
+- Each connection is a tokio task, with a second task writing its
+  encrypted frames, fed by a channel.
+- The shared state is split into **64 shards by `hash(user)`**, each with
+  its own lock, holding those users' accounts, devices, keys, queues,
+  connections and presence watchers. A group lives in the shard of its id.
+- **No deadlocks, by one rule:** a handler holds one shard, or several
+  taken together in ascending order, and never takes a lock while holding
+  one. Locks are never held across an `.await`, so handlers are plain
+  synchronous code.
+- The slow work runs outside the locks: password hashing, FCM calls and
+  database commits.
+- A panicking handler is caught: it's logged and counted, only that
+  connection closes, and the rest of the server carries on.
+- No C compiler needed: the crypto is pure Rust.
 
-**Differences from Node, on purpose:**
-- Transport encryption is done directly with AES-GCM after snow's handshake.
-  snow's own transport caps messages at 64 KB, and stanzas go up to 1 MB.
-- No C compiler is needed: the crypto is pure Rust, and HTTPS uses Windows'
-  own TLS (SChannel). On Linux it uses OpenSSL.
+## The protocol
+
+XMPP describes chat as small stanzas (a message, a receipt, a presence
+change). Like WhatsApp's FunXMPP, xb-chat keeps that model and encodes it
+in binary: common words are one-byte tokens from a shared dictionary,
+phone numbers pack two digits per byte, message ids pack as hex.
+
+```
+<receipt id="3EB0C4A1F27B9D5E" to="919812345678@s.xb" type="read"/>     67 bytes as XML
+
+f8 07 | 06 | 22 | fb 08 3e b0 c4 a1 f2 7b 9d 5e | 23 | fa ff 06 91 98 12 34 56 78 03 | 25 41     27 bytes
+list   receipt id   hex-packed id                to   number packed by digit, then s.xb   type read
+```
+
+An ack goes from 59 bytes to 24, a presence from 53 to 16.
+
+- Every connection opens with a **Noise XX** handshake (Curve25519,
+  AES-GCM, SHA-256). Each stanza then travels in a 3-byte-length frame,
+  encrypted with AES-256-GCM, zlib-compressed when that helps.
+- Browsers carry the identical bytes inside WebSocket messages, so one
+  session type serves both.
+- The codec is tested byte for byte against stanzas recorded from a
+  reference implementation, and fuzzed (see [Testing](#testing)).
+
+## Storage
+
+Two embedded stores, both pure Rust, each suited to its kind of data:
+
+| Store | Holds | Why this one |
+|---|---|---|
+| **`<data>/xb.redb`**, [redb](https://www.redb.org) (a B-tree with ACID transactions) | accounts, devices, keys, groups, last seen | read-mostly, must never be lost |
+| **`<data>/queue/`**, [fjall](https://github.com/fjall-rs/fjall) (an LSM tree) | the offline queue | almost all "append, then delete soon", which an LSM writes sequentially |
+
+**Memory is the fast path** (as WhatsApp used Mnesia): everything is read
+from memory, and the stores only make it durable.
+
+**Records (redb):** every change marks the record it touched; a writer
+task saves all records marked since its last save in **one transaction**,
+so under load many changes share one disk sync (group commit). Each record
+is a small JSON value, easy to inspect and migrate.
+
+**The offline queue (fjall), write-back:**
+- a queued stanza stays only in memory for its first
+  `XB_QUEUE_WRITE_DELAY_MS` (5 s by default);
+- it's written only if still undelivered after that, and deleted again
+  once delivered;
+- nearly every message and receipt is delivered sooner, so it **never
+  touches the disk**.
+
+Measured at 5,000 msg/s for 15 s (2,000 phones, about 75,600 messages):
+
+| | write every stanza (delay 0) | write-back (5 s) |
+|---|---|---|
+| queued stanzas written to disk, then deleted again | 143,851 + 143,851 | **0 + 0** |
+| delivered before being written | 7,419 | **151,090** (all) |
+| time committing to disk | 7.5 s | **0.68 s** (only account records) |
+
+**Cold queues leave memory:** a device that stays offline keeps its
+stanzas on disk only (after `XB_QUEUE_COLD_MS`, 5 min). After a restart the
+queue loads as an index, and stanzas are read back from disk when their
+device logs in.
+
+**A message's life on the server:**
+1. It arrives already end-to-end encrypted: one ciphertext per receiving
+   device, or one for a whole group (Sender Keys).
+2. A copy is queued for each receiving device under a dedup key, so a
+   client's retry can never create a duplicate. The sender gets its ack.
+3. A connected device gets it at once; an offline one gets a content-free
+   push, connects and takes its queue in order.
+4. The device's "delivered" receipt removes it from the queue, usually
+   before it ever touched the disk.
+5. The server keeps no history. An uncollected stanza is dropped after 30
+   days.
+
+**Durability:** the sender's ack goes out before anything is written, as at
+WhatsApp. A single server that crashes inside the write delay loses those
+stanzas; a [replica pair](#replica-pairs-a-machine-can-die) covers that
+window, since the standby holds every stanza within a fraction of a
+millisecond. A server running alone can set the delay to 0 instead.
+
+**Snapshots:** `xb-server export-json` writes the whole state as one JSON
+file (`state.json`), and `xb-server import-json` reads it back. A data
+folder with a `state.json` and no `xb.redb` is imported on first start.
+
+## Media
+
+Files are a separate process, `xb-media`, as WhatsApp's media servers are.
+It has no chat state, so it can run on other machines, scale on its own,
+and fail without taking chat down. The chat server contains no media
+code: the two share only the upload-token format.
+
+1. The phone encrypts the file with a fresh random key (AES-256-GCM).
+2. It asks the chat server for an upload token: valid 10 minutes, signed
+   with a secret xb-media shares.
+3. It uploads the ciphertext. The file is named by its SHA-256, so a
+   forwarded file is stored once and never uploaded again. Big files
+   resume where a dropped connection stopped.
+4. The link, the key and the hash travel to the recipient inside the
+   end-to-end encrypted message. The server only ever holds ciphertext.
+5. Files expire after 30 days; partial uploads after a day.
+
+By default links point at the chat server's web port, which streams
+`/upload` and `/m/` through to xb-media with no buffering, so phones need
+one address. Set `XB_MEDIA_URL` to send clients to the media service
+directly. When xb-media was killed in the middle of a conversation,
+uploads failed until it came back and chat carried on unaffected.
+
+| `xb-media` setting | Default | |
+|---|---|---|
+| `XB_MEDIA_HOST` / `XB_MEDIA_PORT` | 127.0.0.1 / 8081 | where it listens |
+| `XB_DATA` / `XB_MEDIA_DIR` | `./data` / `<data>/media` | where the secret and the files are |
+| `XB_MEDIA_PUBLIC_URL` | `http://<host>:<port>` | base of the file links |
+| `XB_MEDIA_MAX_MB` | 64 | largest file |
+| `XB_METRICS_ADDR` | 127.0.0.1:9094 | `/metrics`, `/health`; `none` = off |
 
 ## Performance
 
-[loadgen/src/main.rs](loadgen/src/main.rs) runs simulated phones against a
-server:
-1. each phone does the Noise handshake and logs in with a phone code (the
-   first run), then with its device key;
-2. it publishes keys;
-3. it sends messages to random other phones at a set total rate;
-4. it returns delivered receipts and acks them.
-
-That's the full cycle real phones cause.
-
-Start the server with `XB_OTP_ECHO=1` (and `XB_STATS_SECS=5` for lock
-statistics in its log), then:
+[loadgen](loadgen/src/main.rs) runs simulated phones: each does the Noise
+handshake, logs in, publishes keys, sends messages to random other phones
+at a set total rate, and returns delivered receipts. That's the full cycle
+real phones cause.
 
 ```bash
 cargo run --release --bin loadgen -- --port 5222 --users 2000 --rate 5000 --secs 15
 ```
 
-It prints messages per second and latency percentiles: **ack** (one tick),
-**deliver** (on the other phone), and **receipt** (two ticks).
-
-**Measured on 22 October 2026**, on a Ryzen 9 5900HX laptop with 16 threads,
-the server and the load generator on the same machine. The numbers are a
-lower bound.
+Measured on a Ryzen 9 5900HX laptop (16 threads), server and load tool on
+the same machine, so these are lower bounds:
 
 | 2,000 phones | one global lock | 64 shards |
 |---|---|---|
-| 5,000 msg/s | ack p50 9.4 ms, p99 50 ms; lock wait 200 µs | ack p50 **3.9 ms**, p99 **18 ms**; lock wait 3.6 µs |
-| 20,000 msg/s | collapses: 8,600 msg/s, acks take seconds | **16,000 msg/s**, nothing lost; ack p50 108 ms |
-| 40,000 msg/s | — | about 26,000 msg/s on average, 51,000 at peak; the CPU is saturated |
+| 5,000 msg/s | ack p50 9.4 ms, p99 50 ms | ack p50 **3.9 ms**, p99 **18 ms** |
+| 20,000 msg/s | collapses: 8,600 msg/s, acks take seconds | **16,000 msg/s**, nothing lost |
+| 40,000 msg/s | — | about 26,000 msg/s average, 51,000 at peak; CPU saturated |
 
-The load test also found **a real bug**:
-- a client that sends its last handshake message and `<auth>` back to back
-  could hang, because both arrived in one read and the `<auth>` stayed
-  unread in the buffer;
-- under load, a third of the logins hung that way;
-- it's fixed: buffered frames are processed before waiting for more bytes.
+**Memory per connection:** an idle connected phone costs about **8 KB**
+(16,000 idle connections measured). Getting there: no read buffer held
+while a socket is idle, handshake state boxed so each connection's task
+stays small, and boxed messages in the send queue. One million connected
+phones is about 8 GB; the 1M+ test itself needs a Linux machine and
+several load machines (Windows limits one load tool to about 16,000
+outgoing ports).
 
-It also found two O(n) operations on every message:
-- removing an emptied queue from the map of all queues;
-- counting a user's offline stanzas by scanning every queue.
-
-Both are now O(1) or limited to that user.
+## Resilience
 
 ### Overload: slow down, don't fall over
 
-What happens when there's more work than the machine can do:
-
 - **Too many sockets:** above `XB_MAX_CONNECTIONS`, a new socket is closed
   before any work is spent on it.
-- **A reconnect storm** (a restart, or a network coming back):
-  - at most `XB_MAX_HANDSHAKES` handshakes run at once;
-  - logins are limited to `XB_LOGIN_RATE` a second;
-  - the rest get `<failure reason="busy" retry="1-5"/>`, and well-behaved
-    clients come back after that, with jitter.
-- **A client that stops reading** (a frozen phone, or a deliberately slow
-  attacker):
-  - its send queue is limited to `XB_SEND_QUEUE_MAX` bytes, and a single
-    write to `XB_WRITE_TIMEOUT_MS`;
-  - past either, it's closed;
-  - nothing is lost: what it hadn't acknowledged waits in its offline queue.
-- **A backlog:** a phone back after a long time offline gets its offline
-  queue **in batches**, as fast as it reads them. It isn't mistaken for a
-  slow reader, and new messages wait at the end of the backlog, so the
-  order is kept.
-- **Running out of file handles:** the accept loop pauses instead of
-  spinning on the error.
-- **The clients:**
-  - Android and Web wait a random 1–5 s before reconnecting after a dropped
-    connection;
-  - they back off with jitter on failures;
-  - they honour `retry`.
-
-  A restart then doesn't bring every phone back in the same second.
-
-The `[stats]` line counts what was turned away (`refused`, `busy`,
-`slow`). [tests-node/overload.test.js](tests-node/overload.test.js) checks
-each case.
-
-**Reconnect storm, measured** (22–23 October 2026, same laptop):
-- 8,000 registered phones logged in all at once, 4,000 in parallel;
-- the login limit was set to 1,000 a second.
-
-All 7,999 registered phones were in after 9.0 s. 4,701 attempts were told
-"busy", and each one got in on a later try. Nothing hung, and nothing was
-refused. At 5,000 msg/s afterwards the numbers were unchanged (ack p50 5 ms,
-p99 21 ms), with no false "slow" cut-offs.
-
-### Monitoring
-
-A second port, `XB_METRICS_ADDR` (default `127.0.0.1:9091`, reachable only
-from this machine):
-
-| Path | Answers |
-|---|---|
-| `/metrics` | Prometheus text: connections (open, cap, total), users and devices online, accounts, queued stanzas, stanzas and messages, bytes in and out, refused / busy / slow, **panics**, pushes and push failures, saves (count, records, time, errors), lock acquisitions, wait and hold time, version |
-| `/health` | `200 ok` while the process answers (liveness) |
-| `/ready` | `200 ready`, or `503` when it shouldn't get new traffic: at 95% of the connection cap, after a failed save in the last 30 s, or while draining (readiness, for a load balancer) |
-| `POST /drain` | drain before a restart (see Upgrades) |
-
-To try it: `curl http://127.0.0.1:9091/metrics`. Point Prometheus at it,
-and Grafana for graphs.
-
-The other two programs have the same kind of port (`XB_METRICS_ADDR` each;
-`none` turns it off):
-
-| Program | Default | Paths | Metrics |
-|---|---|---|---|
-| `xb-gateway` | `127.0.0.1:9093` | `/metrics`, `/health`, `/ready` (`503` with no core link, or draining), `POST /drain` | `xb_gateway_*`: connections (open, cap, total), refused, failed handshakes, slow readers closed, stanzas and bytes each way, core link up and how often it came up |
-| `xb-media` | `127.0.0.1:9094` | `/metrics`, `/health` | `xb_media_upload_*` and `xb_media_download_*`: requests, bytes, rejected (4xx), errors (5xx), time spent |
-
-A gateway's drain (Ctrl+C or `POST /drain`) closes its ports, tells its
-phones "restart, come back within `XB_DRAIN_SPREAD_S`", so the load
-balancer sends them to another gateway, and exits.
-
-**Panics:**
-- a handler that panics (a bug some input reached) no longer kills its
-  connection's task silently;
-- it's caught, logged as `[panic]`, counted in `xb_panics_total`, and that
-  connection is closed with `internal-error`;
-- the rest of the server carries on: shard locks recover, and the
-  connection's cleanup runs.
+- **A reconnect storm:** at most `XB_MAX_HANDSHAKES` handshakes at once,
+  logins limited to `XB_LOGIN_RATE` a second, the rest told
+  `<failure reason="busy" retry="1-5"/>` so they return spread out.
+  Measured: 8,000 phones logging in at once with a 1,000/s limit were all
+  back in 9.0 s, and the latency afterwards was unchanged.
+- **A client that stops reading:** its send queue is capped
+  (`XB_SEND_QUEUE_MAX`) and a single write times out
+  (`XB_WRITE_TIMEOUT_MS`); past either it's closed, and nothing is lost:
+  what it hadn't acknowledged waits in its queue.
+- **A long backlog:** a phone back after a long time offline gets its
+  queue in batches as fast as it reads them; new messages wait at the end,
+  so the order holds.
 
 ### Upgrades: drain, then take over
 
-A restart used to drop every phone in the same second, and they all came
-back in the next few (the login limit then told most of them "busy"). Now
-a restart is a **drain**: Ctrl+C or `POST /drain` on the metrics port.
+Ctrl+C or `POST /drain` on the metrics port drains the server:
+1. it closes its ports at once;
+2. it tells every client `<stream:error code="restart" retry="N"/>`, with N
+   spread over `XB_DRAIN_SPREAD_S` (10 s), so reconnects arrive evenly;
+3. it saves everything, then exits.
 
-1. The old process closes its ports at once.
-2. It tells every connected client `<stream:error code="restart" retry="N"/>`,
-   with N random over `XB_DRAIN_SPREAD_S` (default 10). The clients
-   (Android, web, Node) wait N s plus up to 1 s, so the reconnects arrive
-   evenly over the window.
-3. It saves everything (records, and every queued stanza still only in
-   memory under write-back), then exits.
-
-The new version starts *before* the drain, with `XB_TAKEOVER=1`:
-
-- it binds the ports as soon as the old process lets go, so new
-  connections wait in the system's queue instead of being refused;
-- it opens the data files as soon as the old process exits (redb locks
-  them, so two processes can never write at once);
-- it then serves, with nothing lost.
-
-```bash
-XB_TAKEOVER=1 ./xb-server-new &    # waits (at most XB_TAKEOVER_WAIT_S, 120)
-curl -X POST http://127.0.0.1:9091/drain
-```
-
-[tests-node/drain.test.js](tests-node/drain.test.js) shows the whole thing:
-- 20 clients online and 100 stanzas held only in memory;
-- the new process serving **83 ms** after the drain began;
-- every client told `restart` with spread-out retries;
-- all 100 stanzas delivered, in order.
-
-**What it can't do:** with one server, the data can't be open in two
-processes at once, so there is still a gap of about a tenth of a second
-with nobody accepting. Clients ride through it, because they were told to
-come back later anyway. A truly seamless upgrade, where nobody notices,
-needs a second node: drain one while the other serves (see Replica pairs).
+A new version started with `XB_TAKEOVER=1` beforehand takes the ports the
+moment they're released and the data files the moment the old process
+exits. Measured: the new process was serving **83 ms** after the drain
+began, with every queued stanza.
 
 ### Replica pairs: a machine can die
 
 Two servers, each with its own data folder, started the same way, each
-naming the other ([core/src/replica.rs](core/src/replica.rs)). One serves (the
-primary); the other (the standby) keeps a live copy of everything on its
-own disk and takes over if the primary goes.
+naming the other ([core/src/replica.rs](core/src/replica.rs)). One serves;
+the standby keeps a live copy on its own disk.
 
 ```bash
 # machine 1                                  # machine 2
@@ -551,231 +313,146 @@ XB_REPL_SECRET=<the same long secret>        XB_REPL_SECRET=<the same>
 XB_NODE_ID=1  ./xb-server                    XB_NODE_ID=2  ./xb-server
 ```
 
-**What the standby gets**, over an encrypted link:
-1. The server's key and token secret, so it *is* the same server to the
-   phones (they pin the key).
-2. A full copy: every record, every queued stanza, every profile picture.
-3. Then every change as it happens: each record as it's saved, each stanza
-   the moment it's queued or delivered.
-
-Note the last point. The primary writes a queued stanza to its own disk
-only if it's still undelivered after 5 s (write-back), but the standby has
-it within a fraction of a millisecond, over the network. So a stanza is
-safe once it's on two machines, long before it's on either disk; the
-standby still writes it to its own disk within 50 ms. This is how a pair
-beats one server's disk, at no extra disk work on the primary.
-
-**Who serves** is decided at startup, by asking the peer:
-
-| The peer is | This node |
-|---|---|
-| serving | follows it |
-| a standby with a complete copy | tells it to take over, then follows it (its copy is newer than our disk, which may have lost its write-back window in a crash) |
-| starting too | the lower `XB_NODE_ID` serves |
-| unreachable (for `XB_PEER_WAIT_S`, 5) | serves |
-
-So a machine that comes back after a crash never serves stale data: it
-rejoins as the standby. A standby moves its old copy to `<data>/previous/`
-before copying afresh (nothing is ever deleted).
-
-**When the primary goes:**
-- It dies: the standby notices within 6 s (pings every 2 s), waits
-  `XB_FAILOVER_S` (10) for it to come back, then serves.
-- It drains (Ctrl+C, `POST /drain`): it hands over, so the standby serves
-  at once (about 0.3 s), after everything sent so far.
-
-**One address for the clients:** only the serving node listens on the chat
-and web ports, so whatever the clients connect to sends each connection to
-the node that accepts: a load balancer (HAProxy, a virtual IP with
-keepalived) or, for development, [tools/pair-front.mjs](tools/pair-front.mjs).
-
-**Upgrades with no gap:** drain the primary (the standby takes over), then
-start the new version on that machine (it follows); then the same on the
-other machine.
-
-[tests-node/pair.test.js](tests-node/pair.test.js):
-- A serves, B copies; A is killed with 100 acknowledged stanzas only in
-  its memory;
-- B serves **1.6 s** later (failover set to 1 s), same server key, all 100
-  in order;
-- A comes back and follows B;
-- B drains, and A serves **0.3 s** later, with what B had received.
-
-**Limits:**
-- Replication is asynchronous: a stanza is acknowledged before the standby
-  has it. A crash loses what was on the wire, normally under a millisecond.
-- No witness: if the link between the two breaks while clients can still
-  reach both, both could serve (split brain). Keep them on the same
-  network; the safe setting for a doubtful network is a long `XB_FAILOVER_S`.
-- Media files aren't replicated: run the media service (xb-media) on
-  storage both can reach.
-- If both machines die, start the one that served last first.
-- More connections than one machine holds: connection gateways (next).
+- **What the standby gets**, over an encrypted link: the server's key (so
+  it is the same server to the phones), a full copy, then every change as
+  it happens: each record as it's saved, each stanza the moment it's
+  queued or delivered.
+- **Who serves** is decided at startup by asking the peer. A node that
+  comes back after a crash finds the other serving and becomes its
+  standby, so it never serves stale data. If both start at once, the lower
+  `XB_NODE_ID` serves.
+- **The primary dies:** the standby notices within 6 s, waits
+  `XB_FAILOVER_S`, then serves. Measured: **1.6 s** with a 1 s setting, with
+  all acknowledged messages, including ones only in the dead primary's
+  memory.
+- **The primary drains:** it hands over, and the standby serves in about
+  0.3 s. Upgrades then have no gap: drain one machine, upgrade it, it
+  rejoins as standby, then the other.
+- **Clients** reach whichever node serves through a load balancer
+  (HAProxy, or a virtual IP with keepalived): only the serving node
+  listens on the chat and web ports.
+- **Limits:** replication is asynchronous (a crash loses what was on the
+  wire, normally under a millisecond); there is no third "witness", so
+  keep the two on the same network.
 
 ### Connection gateways: more phones than one machine holds
 
 At millions of phones, a server runs out of connections first: sockets,
-Noise handshakes, encryption and compression, a send queue per phone. The
-routing itself (who gets what) is cheap. So those split apart
-([core/src/relay.rs](core/src/relay.rs), [gateway/src/main.rs](gateway/src/main.rs)):
-
-```
-phones ──► gateway 1 ─┐
-phones ──► gateway 2 ─┼──► core (+ its standby)
-phones ──► gateway 3 ─┘
-```
-
-- **Gateways** accept the phones (TCP and WebSocket), run the handshakes,
-  encrypt and compress, keep each phone's send queue, and close readers
-  that are too slow. They keep no state; run as many as needed, behind a
-  load balancer.
-- **The core** is the server as before (a replica pair, if you like). It
-  runs the same session for a phone on a gateway as for one on its own
-  port, so everything works the same.
-- **Between them**, one encrypted link per gateway (`XB_GATEWAY_SECRET`)
-  carries the decrypted stanzas, many to a frame and uncompressed (the
-  messages are end-to-end ciphertext, which doesn't shrink). The core hands
-  each gateway the server's key, so phones see the same server through any
-  of them.
-- **If the core restarts** or fails over, the gateways tell their phones
-  "restart, come back in N s" and connect to whichever core serves next
-  (`XB_CORE` takes both of a pair).
+handshakes, encryption, send queues. `xb-gateway` holds those; the core
+keeps only the logic and data ([core/src/relay.rs](core/src/relay.rs)).
 
 ```bash
 # core
 XB_GATEWAY_ADDR=0.0.0.0:5400 XB_GATEWAY_SECRET=<secret> ./xb-server
 # each gateway
-XB_CORE=core1:5400,core2:5400 XB_GATEWAY_SECRET=<secret> XB_HOST=0.0.0.0 \
-XB_HTTP_UPSTREAM=http://core1:8080 ./xb-gateway
+XB_CORE=core1:5400,core2:5400 XB_GATEWAY_SECRET=<secret> XB_HOST=0.0.0.0 XB_HTTP_UPSTREAM=http://core1:8080 ./xb-gateway
 ```
 
-**Measured** on this laptop, with everything on one machine (load tool included):
+One encrypted link per gateway carries the decrypted stanzas, many to a
+frame and uncompressed (they're end-to-end ciphertext already). If the core
+restarts or fails over, gateways tell their phones to come back spread
+out, and connect to whichever core serves next.
 
 | 2,000 phones, 5,000 msg/s | Throughput | Delivery p50 / p99 | Core CPU | Gateway CPU |
 |---|---|---|---|---|
 | straight to the core | 4,923 msg/s | 8.6 / 50 ms | 76 s | — |
 | through a gateway | 5,020 msg/s | 4.9 / 29 ms | **37 s** | 77 s |
 
-| 10,000 idle phones | Core memory | Gateway memory |
+The core's CPU halves; the encryption moves to the gateways, which you can
+multiply. Splitting *users* across several cores isn't built: it matters
+only when one core can't route the message rate, far beyond what's
+measured here.
+
+## Monitoring
+
+Each program has a local monitoring port (`XB_METRICS_ADDR`; `none` turns
+it off):
+
+| Program | Default | Paths |
 |---|---|---|
-| straight to the core | 10.7 KB each | — |
-| through a gateway | 7.2 KB each | 7.4 KB each |
+| `xb-server` | 127.0.0.1:9091 | `/metrics` (Prometheus), `/health`, `/ready`, `POST /drain` |
+| `xb-gateway` | 127.0.0.1:9093 | `/metrics`, `/health`, `/ready`, `POST /drain` |
+| `xb-media` | 127.0.0.1:9094 | `/metrics`, `/health` |
 
-- The core's CPU halves: the encryption moves to the gateways, which you
-  can multiply. The core is the one part you can't.
-- The first version sent each stanza as its own encrypted, compressed frame
-  and its own write: the gateway used 3.7 cores and delivery took 3.6 s.
-  Batching the link fixed both.
-- Every protocol test also runs through a gateway:
-  `XB_RS_VIA_GATEWAY=1 node --test tests-node/e2e.test.js …` (59 tests), and
-  [tests-node/gateway.test.js](tests-node/gateway.test.js) runs two
-  gateways through a core restart.
+- **xb-server metrics:** connections, users and devices online, queued
+  stanzas (on disk and in memory), messages, bytes, refused / busy / slow,
+  panics, pushes, saves, lock statistics.
+- **`/ready`** answers 503 when the server shouldn't get new traffic: near
+  the connection cap, after a failed save, or while draining.
+- **xb-gateway:** connections, refused, failed handshakes, slow readers,
+  stanzas and bytes each way, the core link. **xb-media:** uploads and
+  downloads (requests, bytes, rejected, errors, time).
 
-**Not done:** splitting the *users* over several cores. That only matters
-when one core can't route the message rate, far beyond what's measured
-here, and it touches every handler (keys, profiles, groups and presence all
-cross users).
+## Settings
 
-### Reaching the server from anywhere: xb-tunnel
+`xb-server`, by environment variable:
 
-A server on a PC at home can't be reached from a phone on 4G: the router
-(and often the ISP, with CGNAT) lets nothing in. Something with a public
-address has to be the meeting point. `xb-tunnel` is a small ngrok of our
-own ([tunnel/src/main.rs](tunnel/src/main.rs)):
+| Variable | Default | |
+|---|---|---|
+| `XB_PORT` | 5222 | chat port (TCP) |
+| `XB_WEB_PORT` | 8080 | WebSocket `/ws`, the web app, media links |
+| `XB_HOST` | 127.0.0.1 | `0.0.0.0` to let other machines in |
+| `XB_DATA` | `./data` | data folder (`xb.redb`, `queue/`, `server_key`, `secret`, `pictures/`) |
+| `XB_APP_DIR` | — | a web app to host; `none` = no app |
+| `XB_PUBLIC_URL` | `http://<host>:<web port>` | public base URL of the web port |
+| `XB_ORIGINS` | — | extra allowed web origins, comma separated |
+| `XB_SECRET` | generated, saved in `<data>/secret` | upload-token secret (shared with xb-media) |
+| `XB_OTP_ECHO` | — | `1` = return SMS codes to the client (development only) |
+| `XB_FCM_CREDENTIALS` | — | Firebase service-account JSON for push wake-ups |
+| `XB_MEDIA_URL` | the web port | the media service's public URL for file links |
+| `XB_MEDIA_UPSTREAM` | `http://127.0.0.1:8081` | where this process reaches the media service |
+| `XB_MAX_CONNECTIONS` | 1000000 | sockets above this are refused at once |
+| `XB_MAX_HANDSHAKES` | 1024 | Noise handshakes running at the same time |
+| `XB_LOGIN_RATE` / `XB_LOGIN_BURST` | 5000 / 10000 | logins a second (and bursts); more are told `busy` |
+| `XB_SEND_QUEUE_MAX` | 16 MB | a connection's unsent bytes; past this it's closed |
+| `XB_WRITE_TIMEOUT_MS` | 30000 | a single write taking longer: the reader is closed |
+| `XB_QUEUE_WRITE_DELAY_MS` | 5000 | write-back delay; 0 = write at once |
+| `XB_QUEUE_COLD_MS` | 300000 | an offline device's stanzas older than this leave memory |
+| `XB_METRICS_ADDR` | 127.0.0.1:9091 | monitoring port; `none` = off |
+| `XB_DRAIN_SPREAD_S` | 10 | a drain tells clients to come back within this |
+| `XB_TAKEOVER` | — | `1` = wait for the running server's ports and data (an upgrade) |
+| `XB_PEER` / `XB_REPL_ADDR` | — / 127.0.0.1:5300 | replica pair: the other node, and this one |
+| `XB_REPL_SECRET` | — | shared secret of the pair's link |
+| `XB_NODE_ID` | `XB_REPL_ADDR` | the lower one serves if both start at once |
+| `XB_FAILOVER_S` | 10 | how long the standby waits for a vanished primary |
+| `XB_GATEWAY_ADDR` / `XB_GATEWAY_SECRET` | — | where connection gateways connect, and their secret |
 
-```
-phone (any network) ──► VPS: xb-tunnel relay ◄══ one encrypted link ══ PC: xb-tunnel client ──► the server
-                        public ports 15222, 18080                      (connects OUT; nothing at home is opened)
-```
-
-- The **client**, next to the server, connects out to the relay and keeps
-  that link up (it reconnects by itself). Each connection the relay gets
-  on a public port travels over the link as a numbered stream to a local
-  port.
-- The link is xb-proto's encrypted server link, with a shared secret
-  (`XB_TUNNEL_SECRET`): a client without it is refused, and nothing on
-  the way can read or change the traffic (which is Noise-encrypted chat
-  anyway).
-- The relay only forwards bytes: no data, no keys, nothing to back up.
-
-**Try it on one machine** (what the phone setup does now: the relay takes
-the phone's ports, the pair front moves behind the client):
+## Testing
 
 ```bash
-export XB_TUNNEL_SECRET=<a long random secret>
-xb-tunnel relay  --listen 0.0.0.0:7000
-xb-tunnel client --relay 127.0.0.1:7000 --map 15222=127.0.0.1:16222 --map 18080=127.0.0.1:19080
+cargo test --workspace
 ```
 
-**With a VPS** (any small Linux server with a public IP):
-
-1. On the VPS: build it (`cargo build --release -p xb-tunnel`) or copy a
-   Linux build, open TCP **7000, 15222 and 18080** in its firewall, and run
-   `XB_TUNNEL_SECRET=… xb-tunnel relay --listen 0.0.0.0:7000`.
-2. On the PC: the same client command, with `--relay <VPS address>:7000`.
-3. On the phone: Settings → Server → the VPS address. The public ports
-   must stay **15222 and 18080**: the app keeps a photo link's port and
-   only swaps the host.
-
-**Before anything is public:** the test server runs with
-`XB_OTP_ECHO=1`, which hands out SMS codes to whoever asks: through a
-public relay, anyone who finds it could register any number. Turn it off
-(and send real SMS) before the relay runs where others can reach it.
-
-[tests-node/tunnel.test.js](tests-node/tunnel.test.js): the chat server
-reached only through relay and client, with chat both ways, a 400 KB file
-over the web port byte for byte, a client with the wrong secret refused,
-and the client restarted.
-
-### Fuzzing
-
-Everything that reads bytes or stanzas from the internet is fuzzed,
-[proto/src/fuzz.rs](proto/src/fuzz.rs), in pure Rust. libFuzzer would need a C++
-compiler, so these use a seeded random generator, mutations of real
-stanzas from the Node codec, and a stanza grammar:
+- **Unit tests:** the codec against stanzas recorded from a reference
+  implementation, framing, upload tokens, helpers.
+- **Fuzzing,** in pure Rust (no libFuzzer, so no C++ compiler), run as part
+  of `cargo test`:
 
 | Fuzzer | What it throws | Must hold |
 |---|---|---|
-| `fuzz_decode_never_panics` | mutated real stanzas, random bytes | the decoder never panics; what it accepts re-encodes, and is stable after that |
+| `fuzz_decode_never_panics` | mutated real stanzas, random bytes | the decoder never panics; what it accepts re-encodes, stably |
 | `fuzz_frames_never_panic` | frames and broken length prefixes, split at random | the frame decoder never panics |
 | `fuzz_cipher_never_panics` | garbage, junk inside valid encryption, fake compression, a real zlib bomb | decryption never panics, and a bomb is capped |
-| `fuzz_stanzas_never_panic_or_deadlock` | random, nearly valid stanzas of every kind (plus well-formed messages) from three logged-in users in a group, and from a connection that isn't logged in, against the real handlers | no handler panics, and no deadlock between shards (the run has a timeout) |
+| `fuzz_stanzas_never_panic_or_deadlock` | random, nearly valid stanzas of every kind from logged-in users, against the real handlers | no handler panics, and no deadlock between shards |
 
-They run quickly as part of `cargo test`. For a long run:
+  For a long run: `XB_FUZZ_ITERS=1000000 cargo test --release --workspace fuzz_`. A failure prints its `XB_FUZZ_SEED`, which replays it. A 200,000-input run per fuzzer found nothing.
 
-```bash
-XB_FUZZ_ITERS=1000000 cargo test --release --workspace fuzz_
-```
+- **Integration tests** drive the real Android, web and test clients
+  against this server: chat, end-to-end encryption, multi-device, groups
+  with Sender Keys, media, crashes, drain and takeover, replica-pair
+  failover, gateways, overload. They live with the clients and will be
+  published with them.
 
-A failure prints its `XB_FUZZ_SEED`, which replays it exactly.
+## What comes from WhatsApp, and what is ours
 
-### How many connections
-
-An idle connection is what most phones are most of the time: logged in,
-nothing to send. Measured with `loadgen --rate 0`: 16,000 idle connections,
-the server's private memory before and after.
-
-| Version | Per idle connection |
+| Part | Source |
 |---|---|
-| first measurement | ~40 KB |
-| wait until the socket is readable, then read into a temporary buffer (no 16 KB buffer held per connection) | ~14 KB |
-| handshake, password check and ciphers on the heap (`Box`), so each connection's task stays small for its whole life | ~11 KB |
-| messages boxed in the send queue (its first block of 32 slots shrinks from ~2.6 KB) | **~8 KB** |
+| Signal protocol, Sender Keys for groups, per-device keys in multi-device | WhatsApp security whitepaper |
+| Noise handshake for the connection; client-side media encryption with the key sent in the message | WhatsApp security whitepaper |
+| Binary XMPP (FunXMPP), store-and-forward with deletion on delivery, content-free pushes | whitepaper and engineering talks |
+| Paired servers replicating each other, in-memory data with write-back, ~2M connections per server | WhatsApp engineering talks (2012, 2014) |
+| redb and fjall, the 5 s write-back, drain and takeover, the gateway split, `phash` checks for groups | our own design, in the spirit of the above |
 
-The two tasks of a connection now take 1.3 KB (reader) and 0.5 KB
-(writer); the AES-GCM keys take 2 KB. Separately, every registered account
-costs about 6–7 KB of memory (profile, devices, pre-keys) and about 3.4 KB
-on disk.
+## Licence
 
-**What that means:**
-- **1 million connected phones ≈ 8 GB**, and **2 million (WhatsApp's 2012 figure
-  per server) ≈ 16 GB** of server memory, plus the kernel's socket buffers
-  and the accounts' data.
-- That fits a single Linux server with 32–64 GB, raised file limits
-  (`ulimit -n`) and tuned TCP settings. This has **not been run yet**:
-  this laptop can only open about 16,000 test connections, because Windows
-  gives the load tool 16,384 outgoing ports.
-- A real test of 1M+ needs a Linux server and several client machines.
-
-**More than one machine:** connection gateways (above) hold the
-connections; the core keeps 7 KB per phone and half the CPU.
+[MIT](LICENSE)

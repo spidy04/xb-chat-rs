@@ -1,11 +1,11 @@
-//! Server state (server/store.js): accounts, devices, groups, last seen,
+//! Server state: accounts, devices, groups, last seen,
 //! public pre-keys and one offline queue per device.
 //!
 //! Everything is held in memory (the fast path, like Mnesia's ram_copies).
 //! Each change also marks the record it touched (`Dirty`); the writer task
 //! saves those records to <data>/xb.redb (see db.rs) in one transaction.
-//! state.json (the Node server's format) is only read to import it, and
-//! written by `xb-server export-json`. Chat history isn't kept here: it
+//! state.json, a JSON snapshot of everything, is only read to import it,
+//! and written by `xb-server export-json`. Chat history isn't kept here: it
 //! lives on the phones.
 
 use crate::codec::{self, Node};
@@ -226,7 +226,7 @@ pub struct Store {
     pub repl: Option<Arc<crate::replica::Sink>>,
 }
 
-/// A JSON object -> IndexMap in JavaScript's key order (what Node sees after a load).
+/// A JSON object -> IndexMap in JavaScript's key order (integer-like keys first).
 fn js_map<T: for<'de> Deserialize<'de>>(v: Option<&Value>) -> io::Result<IndexMap<String, T>> {
     let mut out = IndexMap::new();
     let Some(Value::Object(m)) = v else {
@@ -267,7 +267,7 @@ impl Store {
         }
     }
 
-    /// Reads a Node-format state.json (to import it). -> false if there is none
+    /// Reads a state.json snapshot (to import it). -> false if there is none
     pub fn load_json(&mut self) -> io::Result<bool> {
         let Some(file) = &self.file else {
             return Ok(false);
@@ -347,7 +347,7 @@ impl Store {
         self.notify.notify_one();
     }
 
-    /// The whole state as JSON text, Node's format.
+    /// The whole state as JSON text (the state.json format).
     pub fn snapshot(&self) -> String {
         let offline: Map<String, Value> =
             self.offline.iter().map(|(owner, q)| (owner.clone(), Value::Array(q.iter().map(|(k, v)| json!([k, v.at, B64.encode(self.frame(owner, k, v).unwrap_or_default())])).collect()))).collect();
@@ -833,9 +833,8 @@ impl Store {
     }
 
     /// Stanzas waiting for any device of `user`.
-    /// Looks only at this user's devices, not every queue on the server (Node
-    /// scans them all; it also counts queues of devices that no longer
-    /// exist, which can never be delivered anyway).
+    /// Looks only at this user's devices, not every queue on the server
+    /// (queues of devices that no longer exist can never be delivered anyway).
     pub fn pending_count(&self, user: &str) -> usize {
         let mut ids: HashSet<String> = self.key_devices(user).into_iter().collect();
         ids.extend(self.devices.get(user).into_iter().flat_map(|d| d.values().filter_map(|r| r.e2e.clone())));
@@ -949,7 +948,7 @@ impl Store {
 
     // ------------------------------------------------------------ groups
 
-    /// A new group id: the time, then a sequence number (like Node's).
+    /// A new group id: the time, then a sequence number.
     pub fn new_group_id(&self) -> String {
         let seq = self.counters.group_seq.fetch_add(1, Ordering::Relaxed) + 1;
         format!("{}{:04}", now_ms(), seq)

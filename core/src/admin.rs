@@ -1,5 +1,5 @@
-//! Test hooks (XB_TEST_ADMIN=1 only): what the Node tests read from
-//! `chat.store`, over HTTP, so the same tests can check the Rust server.
+//! Test hooks (XB_TEST_ADMIN=1 only): integration tests read the server's
+//! state through these, over HTTP (POST /__test on the web port).
 
 use crate::push::Pusher;
 use crate::server::Hub;

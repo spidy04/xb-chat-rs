@@ -1,4 +1,4 @@
-//! The server's web port (the Node server's server/gateway.js): the chat
+//! The server's web port: the chat
 //! protocol for browsers on one HTTP origin.
 //!   /ws          WebSocket carrying the same bytes as TCP (header, Noise,
 //!                encrypted stanzas), one frame per WebSocket message
@@ -197,8 +197,8 @@ async fn pass_through(gw: &Web, upstream: &str, method: Method, uri: Uri, header
     b.body(Body::from_stream(res.bytes_stream())).unwrap_or_else(|_| text(502, "Bad Web"))
 }
 
-/// Tests only: lets a test read the server's state, like the Node tests
-/// read `chat.store`. Off unless XB_TEST_ADMIN=1.
+/// Tests only: lets an integration test read the server's state. Off
+/// unless XB_TEST_ADMIN=1.
 async fn test_admin(State(gw): State<Arc<Web>>, body: String) -> Response {
     if !gw.test_admin {
         return text(404, "Not Found");

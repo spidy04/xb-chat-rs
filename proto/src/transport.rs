@@ -1,4 +1,4 @@
-//! The connection layer (protocol/transport.js, PROTOCOL.md §2):
+//! The connection layer (PROTOCOL.md §2):
 //!
 //!   client -> HEADER ("XB" 2 1), then Noise XX handshake frames
 //!   both   -> encrypted frames: [3-byte length][AES-GCM( flags | stanza )]

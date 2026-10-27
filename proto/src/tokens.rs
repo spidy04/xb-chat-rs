@@ -1,7 +1,7 @@
-//! Token dictionaries and type markers, FunXMPP layout (protocol/tokens.js).
+//! Token dictionaries and type markers, FunXMPP layout.
 //!
 //! The index of a word IS its wire value: these lists must stay exactly the
-//! same as the Node ones. Only append, never reorder.
+//! same as the clients'. Only append, never reorder.
 
 pub const LIST_EMPTY: u8 = 0;
 pub const DICTIONARY_0: u8 = 236;

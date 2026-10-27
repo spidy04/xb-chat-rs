@@ -1,11 +1,10 @@
-// xb-server: the xb-chat server in Rust. A port of the Node server
-// (../xb-chat/server), speaking the same protocol (PROTOCOL.md) on the
-// same ports, and reading and writing the same data folder, so either one
-// can run in front of the same phones.
+// xb-server: the xb-chat server in Rust. Phones and browsers connect here
+// (or through connection gateways); the protocol is in PROTOCOL.md, kept
+// with the clients.
 //
 //   cargo run --release
 //
-// Environment (the same as the Node server's):
+// Environment:
 //   XB_PORT         chat port for TCP clients (default 5222)
 //   XB_WEB_PORT     WebSocket (/ws), the web app, and media links over HTTP (default 8080)
 //   XB_HOST         bind address (default 127.0.0.1; 0.0.0.0 to expose)
@@ -116,7 +115,7 @@ async fn main() -> std::io::Result<()> {
     let web_port: u16 = env_num("XB_WEB_PORT", 8080);
     let root = std::path::absolute(env("XB_ROOT").unwrap_or("../xb-chat".into()))?;
 
-    // Commands: export-json (for the Node server), import-json (from it).
+    // Commands: export-json (write state.json), import-json (read it back).
     match std::env::args().nth(1).as_deref() {
         Some("export-json") => {
             let (store, _db) = open_store(&data, false)?;
@@ -245,7 +244,7 @@ async fn main() -> std::io::Result<()> {
         log("start", format!("gateways connect on {bound}"));
     }
 
-    // The web app is static files, plus the protocol modules it shares with Node.
+    // The web app is static files, plus the protocol modules it shares with the other clients.
     let app_dir = match env("XB_APP_DIR") {
         Some(d) if d == "none" => None,
         Some(d) => Some(std::path::absolute(d)?),

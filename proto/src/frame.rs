@@ -4,7 +4,7 @@
 //! frames glued together. `FrameDecoder` collects the pieces and hands out
 //! whole frames. It never touches the network, so it's easy to test.
 
-/// The biggest frame we accept: 1 MB, the same limit as the Node server.
+/// The biggest frame we accept: 1 MB.
 pub const MAX_FRAME: usize = 1024 * 1024;
 
 /// What can go wrong with frames.
@@ -85,7 +85,6 @@ impl FrameDecoder {
     }
 }
 
-// The same checks as the Node test "frame decoder reassembles split and merged chunks".
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,7 +119,7 @@ mod tests {
 
     #[test]
     fn split_and_merged_pieces() {
-        // Two frames glued together, then cut into 7-byte pieces, like the Node test.
+        // Two frames glued together, then cut into 7-byte pieces.
         let mut all = encode(b"hello").unwrap();
         all.extend(encode(&[1u8; 1000]).unwrap());
         let mut d = FrameDecoder::new(MAX_FRAME);

@@ -1,5 +1,5 @@
-//! xb-media's library: a temporary locker for ENCRYPTED files (the Node
-//! server's server/media.js). It knows nothing about chat; the only thing it
+//! xb-media's library: a temporary locker for ENCRYPTED files. It knows
+//! nothing about chat; the only thing it
 //! shares with the chat server is the upload-token format (xb-proto).
 //! Clients encrypt with a fresh key, upload the ciphertext, and send the URL
 //! and key inside an end-to-end encrypted message. We never see a key.

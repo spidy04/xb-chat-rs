@@ -27,7 +27,7 @@ fn rng(name: &str) -> StdRng {
     StdRng::seed_from_u64(seed)
 }
 
-/// Valid stanzas from the Node codec (tests/fixtures/codec.hex), to mutate.
+/// Valid stanzas from the reference codec (tests/fixtures/codec.hex), to mutate.
 fn seeds() -> Vec<Vec<u8>> {
     include_str!("../tests/fixtures/codec.hex").lines().filter(|l| !l.is_empty()).map(|l| (0..l.len()).step_by(2).map(|i| u8::from_str_radix(&l[i..i + 2], 16).unwrap()).collect()).collect()
 }
@@ -84,7 +84,7 @@ fn fuzz_decode_never_panics() {
         // Must return (Ok or Err), never panic. What it accepts must encode
         // and decode again, and be stable from then on. (Not identical the
         // first time: the reserved words xmlstreamstart/end decode as text
-        // but are written as bytes, the same in the Node codec; text() reads
+        // but are written as bytes, as the reference codec does; text() reads
         // both the same.)
         if let Ok(node) = codec::decode(&input) {
             let once = codec::decode(&codec::encode(&node)).expect("re-encoding what we decoded");

@@ -1,4 +1,4 @@
-//! Binary stanzas, WhatsApp's FunXMPP layout (protocol/codec.js, PROTOCOL.md §3).
+//! Binary stanzas, WhatsApp's FunXMPP layout (PROTOCOL.md §3).
 //!
 //! A node is `tag`, attributes and optional content (bytes, text or child
 //! nodes). On the wire:  LIST(n) tag k1 v1 k2 v2 … [content],
@@ -423,12 +423,12 @@ mod tests {
     #[test]
     fn same_bytes_as_node() {
         // <message id="3EB0C431C26A1916" to="bob@s.xb" type="chat"><body>hi</body></message>:
-        // 33 bytes from the Node codec.
+        // 33 bytes from the reference codec.
         let n = Node::new("message").attr("id", "3EB0C431C26A1916").attr("to", "bob@s.xb").attr("type", "chat").nodes(vec![Node::new("body").bytes(b"hi".to_vec())]);
         assert_eq!(crate::util::hex(&encode(&n)), "f8080522fb083eb0c431c26a191623fafc03626f6203253ff801f80210fc026869");
     }
 
-    /// Stanzas encoded by the Node codec (tests/fixtures/codec.hex): we must
+    /// Stanzas encoded by the reference codec (tests/fixtures/codec.hex): we must
     /// read them, and write them back byte for byte.
     #[test]
     fn node_fixtures_round_trip() {

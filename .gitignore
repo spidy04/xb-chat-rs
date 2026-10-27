@@ -15,3 +15,8 @@ fcm-service-account*.json
 /loadgen-users.json
 *.log
 node_modules/
+
+# Integration tests and dev tools that need the clients repository (kept
+# locally until the clients are published).
+/tests-node/
+/tools/

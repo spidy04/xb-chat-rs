@@ -30,7 +30,7 @@ pub fn iso_now() -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}.{:03}Z", ms % 1000)
 }
 
-/// One log line: `2026-10-22T10:00:00.000Z [kind] text`, like the Node server.
+/// One log line: `2026-10-22T10:00:00.000Z [kind] text`.
 pub fn log(kind: &str, text: impl AsRef<str>) {
     println!("{} [{kind}] {}", iso_now(), text.as_ref());
 }

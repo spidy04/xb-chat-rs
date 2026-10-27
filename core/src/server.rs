@@ -1,4 +1,4 @@
-//! The chat server (server/server.js): sessions, login, routing, receipts,
+//! The chat server: sessions, login, routing, receipts,
 //! groups, presence, typing and every `iq`. PROTOCOL.md is the spec.
 //!
 //! Concurrency. Each connection is its own task (`serve`), and a second task
@@ -375,7 +375,7 @@ pub struct Stats {
     pub queue_evicted_bytes: AtomicU64,
 }
 
-/// Phone-number login (server/auth/phone.js): an SMS code per number.
+/// Phone-number login: an SMS code per number.
 struct PendingCode {
     hash: [u8; 32],
     expires: u64,
@@ -936,8 +936,8 @@ fn dispatch(hub: &Arc<Hub>, s: &mut Session, node: &Node) {
 }
 
 /// Runs a handler; if it panics (a bug some input reached), the panic is
-/// logged and counted, and this connection is closed with internal-error,
-/// like the Node server. The rest of the server goes on: shard locks
+/// logged and counted, and this connection is closed with internal-error.
+/// The rest of the server goes on: shard locks
 /// recover from poisoning, and the connection's cleanup still runs.
 fn guarded(hub: &Arc<Hub>, s: &mut Session, node: &Node, handler: fn(&Arc<Hub>, &mut Session, &Node)) {
     let run = std::panic::AssertUnwindSafe(|| handler(hub, s, node));
@@ -995,7 +995,7 @@ fn is_username(s: &str) -> bool {
 }
 
 fn scrypt_hash(pass: &str, salt: &[u8]) -> [u8; 32] {
-    // Node's crypto.scrypt defaults: N = 16384, r = 8, p = 1.
+    // scrypt with N = 16384, r = 8, p = 1 (the common defaults).
     let params = scrypt::Params::new(14, 8, 1, 32).expect("valid scrypt params");
     let mut out = [0u8; 32];
     scrypt::scrypt(pass.as_bytes(), salt, &params, &mut out).expect("32-byte output");
@@ -1415,8 +1415,8 @@ fn kick_device(sh: &mut Shard, user: &str, key: &str, rec: &DeviceRec, reason: &
 /// receiving user, holding one <enc> per device. The <enc>s must cover
 /// exactly the devices with keys (recipient's or members', plus my other
 /// devices); if not, "stale-devices" and the sender re-encrypts.
-/// The device list a sender-key group message was made for (protocol/signal.js
-/// phash): HMAC-SHA256, key "xb-phash", of the sorted "user.device" list
+/// The device list a sender-key group message was made for (the client's
+/// phash, PROTOCOL.md §10.5): HMAC-SHA256, key "xb-phash", of the sorted "user.device" list
 /// joined with commas; the first 8 bytes in hex.
 fn phash_of(mut addrs: Vec<String>) -> String {
     use hmac::Mac;
